@@ -1,472 +1,434 @@
--- Fix for: "Incomplete statement: expected assignment or a function call" error
--- IMPORTANT: This must be placed as a LocalScript (e.g., in StarterPlayerScripts).
--- This script contains the full auto-teleporter logic and a custom UI for status and control.
+-- This script runs continuously, searching for the game map. When the map is found,
+-- it executes a sequence of teleports and clicks. The sequence is instantly halted 
+-- if the in-game timer reaches "00:40" or "00:50", immediately resetting the script
+-- to search for the next game round.
 
+-- Configuration
+local TELEPORT_DELAY = 0.4 -- Time in seconds to wait at each physical target (reduced for lag)
+local SEARCH_WAIT_TIME = 2.0 -- Time in seconds to wait between search attempts
+local TIMER_STOP_VALUES = {"00:40", "00:50"} -- Values that trigger a sequence stop
+local TIMER_START_THRESHOLD = "00:50" -- If the timer is <= this value when starting, abort the sequence
+
+-- Services and Player Setup
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- Wait for essential player components
-if not LocalPlayer then
-    warn("LocalPlayer is nil. Aborting script.")
-    return
-end
-
+-- Wait for the character and HumanoidRootPart to be ready
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart", 10) -- Wait longer for HRP
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 
-if not HumanoidRootPart then
-    warn("Character or HumanoidRootPart not found. Aborting script.")
-    return
-end
+-- Global Control Flags
+local IsSequenceActive = false -- Is the teleport/click sequence currently running?
+local ShouldStop = false       -- Has the timer triggered a stop signal?
 
-print("Fashion Frenzy Auto-Teleporter Initialized (With UI Control).")
-
--- --- CONFIGURATION ---
-local TARGET_TIMER_PATH = "PlayerGui.FashionFrenzyInGameApp.Body.Left.Container.ValueLabel"
-local MAX_TIME_LIMIT = 50 -- Stop teleporting if the timer reaches this (in seconds)
-local TargetModelName = "FashionFrenzy"
-local TeleportDelay = 1.0 -- Wait 1 second between each major action
-
--- The path components to the known, central part the player returns to.
-local BasePartPathComponents = {"Customize", "Minigame", "PetPodiums", "PetPodium1", "1", "Block"}
-
--- Define the three shelf targets
-local ShelfTargets = {
-    {Name = "SHELF 1", BasePath = {"Customize", "Visual"}, Index = 3, FinalPartName = "Collider"},
-    {Name = "SHELF 2", BasePath = {"Customize", "Visual", "Shelves", "Collider"}},
-    {Name = "SHELF 3", BasePath = {"Customize", "Visual"}, Index = 11, FinalPartName = "Collider"},
+-- Define the path components up to the MINIGAME container
+local MINIGAME_CONTAINER_COMPONENTS = {
+    "Interiors",
+    "FashionFrenzy", -- The script handles the UID suffix when searching for this object.
+    "Customize",
+    "Minigame" -- This is the common parent container
 }
 
--- --- BOT CONTROL STATE ---
-local isBotEnabled = true     -- Toggled by the UI button
-local isGameActive = false    -- Toggled by the in-game timer
-local StatusLabel -- Forward declaration for UI element
-local ToggleButton -- Forward declaration for UI element
+--------------------------------------------------------------------------------
+-- TIMER MONITOR THREAD
+--------------------------------------------------------------------------------
 
--- --- UI SETUP FUNCTIONS ---
-
--- Helper to update the UI status text and color
-local function updateBotStatusUI(statusText, color)
-    if StatusLabel then
-        StatusLabel.Text = statusText
-        StatusLabel.TextColor3 = color
-    end
-end
-
--- Helper to update the button appearance
-local function updateButtonState(enabled)
-    if ToggleButton then
-        if enabled then
-            -- Set to Green and text to ON/STOP
-            ToggleButton.BackgroundColor3 = Color3.fromRGB(85, 255, 85) -- Bright Green for ON
-            ToggleButton.Text = "SCRIPT IS ON"
-        else
-            -- Set to Red and text to OFF/START
-            ToggleButton.BackgroundColor3 = Color3.fromRGB(255, 60, 60) -- Red for OFF
-            ToggleButton.Text = "SCRIPT IS OFF"
-        end
-    end
-end
-
--- Toggle function, connected to the button click
-local function toggleBot()
-    isBotEnabled = not isBotEnabled
-    updateButtonState(isBotEnabled)
-    print("Bot manually toggled: " .. (isBotEnabled and "ON" or "OFF"))
+-- Utility function to read the current timer text from the GUI
+local function getCurrentTimerText()
+    -- Find the timer label relative to the PlayerGui
+    local valueLabel = LocalPlayer.PlayerGui:FindFirstChild("FashionFrenzyInGameApp", true)
     
-    if not isBotEnabled then
-        updateBotStatusUI("Script Disabled (Manual Stop)", Color3.fromRGB(255, 150, 0))
-    else
-        -- When re-enabled, rely on the timer to determine the true game status
-        updateBotStatusUI("Searching For Fashion Frenzy...", Color3.fromRGB(255, 255, 150))
+    if valueLabel and valueLabel:IsA("ScreenGui") then
+        -- Traverse the remaining path
+        valueLabel = valueLabel:FindFirstChild("Body")
+            and valueLabel.Body:FindFirstChild("Left")
+            and valueLabel.Body.Left:FindFirstChild("Container")
+            and valueLabel.Body.Left.Container:FindFirstChild("ValueLabel")
     end
-end
 
--- --- UI CREATION (Using the user's provided structure) ---
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "BotStatusUI"
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Enabled = true -- Ensure the UI is visible
-ScreenGui.Parent = PlayerGui
-print("UI: ScreenGui ('BotStatusUI') created and parented successfully.") 
-
-local MainFrame = Instance.new("Frame")
-MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 320, 0, 80) 
--- POSITION ADJUSTED: Centered horizontally (0.5, -160) and further down from the top (0, 100)
-MainFrame.Position = UDim2.new(0.5, -160, 0, 100)
-MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 40) -- Dark Navy
-MainFrame.BorderSizePixel = 0
--- FIX: MainFrame must be parented to the ScreenGui, not itself.
-MainFrame.Parent = ScreenGui
-
--- Rounded corners
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(0, 12)
-UICorner.Parent = MainFrame
- 
--- Aesthetic border/glow
-local UIStroke = Instance.new("UIStroke")
-UIStroke.Thickness = 3
-UIStroke.Color = Color3.fromRGB(100, 100, 255) -- Blue border
-UIStroke.Parent = MainFrame
- 
--- Status Label
-StatusLabel = Instance.new("TextLabel")
-StatusLabel.Name = "StatusText"
-StatusLabel.Size = UDim2.new(1, 0, 0.5, 0)
-StatusLabel.Position = UDim2.new(0, 0, 0, 0)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Searching For Fashion Frenzy..."
-StatusLabel.Font = Enum.Font.SourceSansBold
-StatusLabel.TextSize = 18 
-StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 150) -- Initial Yellow
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Center
-StatusLabel.TextYAlignment = Enum.TextYAlignment.Center
-StatusLabel.Parent = MainFrame
- 
--- Toggle Button
-ToggleButton = Instance.new("TextButton")
-ToggleButton.Name = "ToggleButton"
-ToggleButton.Size = UDim2.new(0.8, 0, 0.4, 0)
-ToggleButton.Position = UDim2.new(0.1, 0, 0.55, 0)
-ToggleButton.BackgroundColor3 = Color3.fromRGB(85, 255, 85) -- Initial Green for ON
-ToggleButton.Text = "SCRIPT IS ON" -- Updated text
-ToggleButton.Font = Enum.Font.SourceSansBold
-ToggleButton.TextSize = 18
-ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-ToggleButton.Parent = MainFrame
- 
-local ToggleCorner = Instance.new("UICorner")
-ToggleCorner.CornerRadius = UDim.new(0, 6)
-ToggleCorner.Parent = ToggleButton
-
-local ToggleStroke = Instance.new("UIStroke")
-ToggleStroke.Thickness = 1
-ToggleStroke.Color = Color3.fromRGB(0, 0, 0)
-ToggleStroke.Parent = ToggleButton
-
--- Connect the button and set initial state
-ToggleButton.Activated:Connect(toggleBot)
-updateButtonState(isBotEnabled)
-
-
--- --- TIMER LOGIC ---
-
--- Function to safely get the timer object and convert it to total seconds
-local function getTimerValue()
-    local pathComponents = string.split(TARGET_TIMER_PATH, ".")
-    local currentObject = LocalPlayer 
-
-    if pathComponents[1] == "PlayerGui" then
-        table.remove(pathComponents, 1)
+    if valueLabel and valueLabel:IsA("TextLabel") then
+        return valueLabel.Text
     end
-    
-    for _, component in ipairs(pathComponents) do
-        currentObject = currentObject:FindFirstChild(component)
-        if not currentObject then
-            return nil
-        end
-    end
-    
-    if currentObject then
-        local timeString = nil
-        
-        if currentObject:IsA("TextLabel") or currentObject:IsA("TextButton") then
-            timeString = currentObject.Text
-        elseif currentObject:IsA("ValueBase") then
-            if type(currentObject.Value) == "string" then
-                timeString = currentObject.Value
-            elseif type(currentObject.Value) == "number" then
-                return currentObject.Value
-            end
-        end
-        
-        if timeString then
-            local minutes, seconds = timeString:match("(%d+):(%d+)")
-            if minutes and seconds then
-                return (tonumber(minutes) * 60) + tonumber(seconds)
-            end
-        end
-    end
-    
     return nil
 end
 
--- Main function to check the timer value and update the bot state
-local function checkTimer()
-    local currentTime = getTimerValue()
-    local oldIsGameActive = isGameActive
-    
-    if currentTime == nil then
-        isGameActive = false
-        if oldIsGameActive then
-            print("STATUS: Timer disappeared. Stopping game active state.")
-            updateBotStatusUI("Game Round Ended/Not Found", Color3.fromRGB(255, 150, 0))
-        elseif isBotEnabled then
-             -- THIS IS WHERE THE UI SHOWS "SEARCHING"
-             updateBotStatusUI("Searching For Fashion Frenzy...", Color3.fromRGB(255, 255, 150))
-        end
-    elseif type(currentTime) == "number" then
-        if currentTime >= MAX_TIME_LIMIT then
-            isGameActive = false
-            if oldIsGameActive then
-                print(string.format("STATUS: Timer reached %d seconds. Game ending soon.", MAX_TIME_LIMIT))
-                updateBotStatusUI("Time Limit Reached (" .. MAX_TIME_LIMIT .. "s)", Color3.fromRGB(255, 100, 100))
-            end
-        else
-            isGameActive = true
-            if not oldIsGameActive then
-                 print(string.format("STATUS: Game Active (Time: %ds). Script Ready.", math.floor(currentTime)))
-            end
-            if isBotEnabled then
-                updateBotStatusUI("GAME ACTIVE | Time: " .. math.floor(currentTime) .. "s", Color3.fromRGB(85, 255, 85))
+local function timerMonitor()
+    while true do
+        if IsSequenceActive then
+            local text = getCurrentTimerText()
+
+            if text then
+                -- Check if the current time matches any of the stop values
+                for _, stopValue in ipairs(TIMER_STOP_VALUES) do
+                    if text == stopValue then
+                        if not ShouldStop then
+                            print(string.format("!! TIMER HIT STOP VALUE (%s). Stopping sequence and preparing to restart search.", stopValue))
+                            ShouldStop = true
+                            break
+                        end
+                    end
+                end
             end
         end
+        task.wait(0.1) -- Check the timer frequently
     end
 end
 
--- --- UTILITIES & ACTIONS ---
+task.spawn(timerMonitor)
 
--- Utility function to safely find an object by a list of names
-local function FindObjectByPath(root, pathComponents)
-    local current = root
-    for _, name in ipairs(pathComponents) do
-        local nextChild = current:FindFirstChild(name)
-        if nextChild then
-            current = nextChild
-        else
-            return nil, string.format("Failed at component: '%s'", name)
-        end
+--------------------------------------------------------------------------------
+-- GUI INTERACTION FUNCTIONS
+--------------------------------------------------------------------------------
+
+-- Function to simulate click events (using getconnections)
+local function clickButton(button)
+    if ShouldStop then return end -- Check before clicking
+
+    if not button or not getconnections then
+        return
     end
-    return current
-end
 
--- Use :Activate() for simulating button clicks
-local function clickAction(button, actionName)
-    if not button or not (button:IsA("TextButton") or button:IsA("ImageButton")) then return end
+    -- print("Button found! Attempting to click:", button.Name) -- Commented out to reduce console spam
 
-    pcall(function()
-        button:Activate()
-    end)
-    
+    -- MouseButton1Down
+    for _, connection in pairs(getconnections(button.MouseButton1Down)) do
+        connection:Fire()
+    end
     task.wait(0.1)
+
+    -- MouseButton1Click
+    for _, connection in pairs(getconnections(button.MouseButton1Click)) do
+        connection:Fire()
+    end
+    task.wait(0.1)
+
+    -- MouseButton1Up
+    for _, connection in pairs(getconnections(button.MouseButton1Up)) do
+        connection:Fire()
+    end
+    -- print("Successfully clicked the button!") -- Commented out to reduce console spam
 end
 
--- Action 1: Clicks TapButton in InteractionsApp (for shelves/base)
-local function findAndClickTapButton()
-    local TargetButtonName = "TapButton"
-    
-    local TargetContainer = LocalPlayer.PlayerGui:FindFirstChild("InteractionsApp")
-    if TargetContainer then
-        TargetContainer = TargetContainer:FindFirstChild("BasicSelects")
-    end
-
-    if not TargetContainer or not TargetContainer:IsA("GuiObject") then
-        return
-    end
-    
-    for _, descendant in ipairs(TargetContainer:GetDescendants()) do
-        if descendant.Name == TargetButtonName and (descendant:IsA("TextButton") or descendant:IsA("ImageButton")) then
-            clickAction(descendant, "Tap Action")
-            task.wait(0.1) 
-            return
-        end
-    end
-end
-
--- Action 2: Clicks a button in BackpackApp (for selecting a pet at base)
+-- Clicks a pet button in BackpackApp
 local function findAndClickPetButton()
-    local TargetButtonName = "Button" 
-    
-    local TargetContainer = LocalPlayer.PlayerGui:FindFirstChild("BackpackApp")
-    if TargetContainer then 
-        TargetContainer = TargetContainer:FindFirstChild("Frame") 
-        if TargetContainer then 
-            TargetContainer = TargetContainer:FindFirstChild("Body")
-            if TargetContainer then
-                -- Path to the pet items
-                TargetContainer = TargetContainer:FindFirstChild("ScrollComplex"):FindFirstChild("ScrollingFrame"):FindFirstChild("Content"):FindFirstChild("pets"):FindFirstChild("Row0")
-            end
-        end 
-    end
+    if ShouldStop then return end
 
-    if not TargetContainer or not TargetContainer:IsA("GuiObject") then
+    local gui = LocalPlayer.PlayerGui
+
+    -- Traverse the path: BackpackApp.Frame.Body.ScrollComplex.ScrollingFrame.Content
+    local content = gui:FindFirstChild("BackpackApp")
+        and gui.BackpackApp:FindFirstChild("Frame")
+        and gui.BackpackApp.Frame:FindFirstChild("Body")
+        and gui.BackpackApp.Frame.Body:FindFirstChild("ScrollComplex")
+        and gui.BackpackApp.Frame.Body.ScrollComplex:FindFirstChild("ScrollingFrame")
+        and gui.BackpackApp.Frame.Body.ScrollComplex.ScrollingFrame:FindFirstChild("Content")
+
+    if not content then
+        warn("Pet content container not found in BackpackApp.")
         return
     end
+    
+    local pets = content:FindFirstChild("pets")
+    if not pets then warn("'pets' container not found under Content."); return end
 
-    for _, frameChild in ipairs(TargetContainer:GetChildren()) do
-        if frameChild.Name:lower():match("add_more_pets") then 
+    local targetRow = pets:FindFirstChild("Row0")
+    if not targetRow then warn("Pet row 'Row0' not found."); return end
+
+    for _, itemFrame in ipairs(targetRow:GetChildren()) do
+        if ShouldStop then return end -- Check inside the loop
+
+        if itemFrame.Name:lower():match("add_more_pets") then 
             continue
         end
 
-        if frameChild:IsA("GuiObject") then
-            local buttonToClick = frameChild:FindFirstChild(TargetButtonName, true)
-            
+        local buttonToClick = itemFrame:FindFirstChild("Button", true)
+        
+        if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
+            clickButton(buttonToClick)
+            return -- Clicked the first available pet button and exit
+        end
+    end
+    warn("No usable pet button found inside the first pet row.")
+end
+
+-- Clicks the Backpack Exit button
+local function closeBackpack()
+    if ShouldStop then return end
+
+    local exitButton = LocalPlayer.PlayerGui:FindFirstChild("BackpackApp")
+        and LocalPlayer.PlayerGui.BackpackApp:FindFirstChild("Frame")
+        and LocalPlayer.PlayerGui.BackpackApp.Frame:FindFirstChild("Header")
+        and LocalPlayer.PlayerGui.BackpackApp.Frame.Header:FindFirstChild("ExitButton")
+
+    if exitButton then
+        print("Closing Backpack App.")
+        clickButton(exitButton)
+    else
+        warn("Backpack ExitButton not found.")
+    end
+end
+
+-- Clicks all buttons in the BasicSelects container
+local function clickAllBasicSelects()
+    if ShouldStop then return end
+
+    local basicSelectsContainer = LocalPlayer.PlayerGui:FindFirstChild("InteractionsApp")
+        and LocalPlayer.PlayerGui.InteractionsApp:FindFirstChild("BasicSelects")
+
+    if not basicSelectsContainer then
+        warn("InteractionsApp.BasicSelects container not found. Skipping clicks.")
+        return
+    end
+
+    local clickCount = 0
+    -- Clicks the nested TapButton inside each Template frame
+    for _, templateFrame in ipairs(basicSelectsContainer:GetChildren()) do
+        if ShouldStop then return end -- Check inside the loop
+        
+        if templateFrame:IsA("GuiObject") then
+            local buttonToClick = templateFrame:FindFirstChild("TapButton")
+
             if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
-                clickAction(buttonToClick, "Pet Action")
-                task.wait(0.1) 
-                return
+                clickButton(buttonToClick)
+                clickCount = clickCount + 1
             end
         end
     end
+    -- print(string.format("Clicked %d buttons in BasicSelects.", clickCount)) -- Commented out to reduce console spam
 end
 
--- Helper function to perform the teleport and click sequence for a single shelf target
-local function runShelfSequence(Target, TargetInteriorsFolder)
-    -- Bot must be manually enabled AND game must be active
-    if not isBotEnabled or not isGameActive then return end 
-    
-    local TargetPart = nil
-    
-    -- Logic to find the specific shelf part
-    if Target.Index then
-        local ParentModel, ParentError = FindObjectByPath(TargetInteriorsFolder, Target.BasePath)
-        
-        if ParentModel then
-            local children = ParentModel:GetChildren()
-            if children[Target.Index] then
-                TargetPart = children[Target.Index]:FindFirstChild(Target.FinalPartName)
-            end
-        else
-            warn(string.format("Path Error for %s: %s", Target.Name, ParentError or "Unknown"))
-        end
-    else
-        TargetPart, DirectError = FindObjectByPath(TargetInteriorsFolder, Target.BasePath)
-        if not TargetPart then
-            warn(string.format("Path Error for %s: %s", Target.Name, DirectError or "Unknown"))
-        end
-    end
+--------------------------------------------------------------------------------
+-- UTILITY & TELEPORT FUNCTIONS
+--------------------------------------------------------------------------------
 
-    if TargetPart and TargetPart:IsA("BasePart") then
-        local ShelfLocation = TargetPart.CFrame * CFrame.new(0, 5, 0)
-        
-        -- TELEPORT 1: Go to the Shelf
-        print(string.format("Teleporting to %s", Target.Name))
-        HumanoidRootPart.CFrame = ShelfLocation
-        task.wait(TeleportDelay)
-        
-        -- ACTION 1: Click at the Shelf (InteractionsApp)
-        if isBotEnabled and isGameActive then 
-            findAndClickTapButton()
-            task.wait(TeleportDelay)
+-- Helper function to find a child whose name starts with a specific prefix.
+local function findChildByPrefix(parent, prefix)
+    for _, child in ipairs(parent:GetChildren()) do
+        if child.Name:sub(1, #prefix) == prefix then
+            return child
         end
-        
-    else
-        warn(string.format("Skipping %s: Target part could not be found or is not a BasePart.", Target.Name))
     end
+    return nil
 end
 
--- Main function for the entire loop
-local function runBot()
-    -- Outer loop ensures the bot keeps running to find the game model/map
-    while true do
-        
-        local TargetInteriorsFolder = nil
-        local Interiors = Workspace:FindFirstChild("Interiors") 
-        if Interiors then
-            for _, child in ipairs(Interiors:GetChildren()) do
-                if child.Name:sub(1, #TargetModelName) == TargetModelName and child:IsA("Model") then
-                    TargetInteriorsFolder = child
-                    print("Found active game model: " .. child.Name)
-                    break
-                end
-            end
+-- Function to handle the marker creation and teleportation
+local function TeleportTo(position)
+    if ShouldStop then return end -- Check before teleporting
+
+    -- Create the small target cube (Teleport Marker)
+    local marker = Instance.new("Part")
+    marker.Name = "TeleportMarker"
+    marker.Size = Vector3.new(1.5, 1.5, 1.5)
+    marker.Position = position + Vector3.new(0, 3, 0)
+    marker.Transparency = 0.2
+    marker.Anchored = true
+    marker.CanCollide = false
+    marker.BrickColor = BrickColor.new("Really red")
+    marker.Material = Enum.Material.Neon
+    marker.Parent = Workspace
+
+    -- Teleport the character's HumanoidRootPart to the marker's location
+    HumanoidRootPart.CFrame = CFrame.new(position + Vector3.new(0, 5, 0))
+
+    -- Wait at the location
+    task.wait(TELEPORT_DELAY)
+
+    -- Clean up the marker
+    marker:Destroy()
+end
+
+-- Function to find the position of the first available Paw part
+local function findFirstPawPosition(minigameContainer)
+    local petPodiumsContainer = minigameContainer:FindFirstChild("PetPodiums")
+    if not petPodiumsContainer then return nil end
+
+    for _, podiumModel in ipairs(petPodiumsContainer:GetChildren()) do
+        local part1 = podiumModel:FindFirstChild("1")
+        local targetPaw = part1 and part1:FindFirstChild("Paw")
+
+        if targetPaw and targetPaw:IsA("BasePart") then
+            return targetPaw.Position
         end
+    end
+    return nil
+end
 
-        local isMapReady = false
-        if TargetInteriorsFolder then
-            -- Find the fixed return location
-            local BasePart, BaseError = FindObjectByPath(TargetInteriorsFolder, BasePartPathComponents)
+--------------------------------------------------------------------------------
+-- TELEPORT SEQUENCE FUNCTIONS
+--------------------------------------------------------------------------------
 
-            if BasePart and BasePart:IsA("BasePart") then
-                isMapReady = true
-                local BasePartLocation = BasePart.CFrame * CFrame.new(0, 5, 0) -- Location to return to
+-- Function to handle Mannequin teleportation and accessory equip cycle
+local function teleportToMannequins(minigameContainer, returnPosition)
+    print("--- STARTING MANNEQUIN TELEPORT & ACCESSORY CYCLE ---")
+    local mannequinsContainer = minigameContainer:FindFirstChild("AccessoryMannequins")
 
-                print("Map and Base Part found. Waiting for game to become active...")
+    if not mannequinsContainer or ShouldStop then warn("Mannequin container not found or sequence stopped."); return end
+
+    local targetsFound = 0
+    for _, mannequinModel in ipairs(mannequinsContainer:GetChildren()) do
+        if ShouldStop then return end -- Stop check
+        
+        targetsFound = targetsFound + 1
+        local targetHRP = mannequinModel:FindFirstChild("HumanoidRootPart")
+
+        if targetHRP and targetHRP:IsA("BasePart") then
+            print(string.format("[MANNEQUIN %d] Teleporting to Mannequin: %s", targetsFound, mannequinModel.Name))
+            
+            -- 1. Teleport to Mannequin HRP
+            TeleportTo(targetHRP.Position)
+            
+            -- 2. Click all buttons in BasicSelects (Accessory Selection)
+            clickAllBasicSelects() 
+            if ShouldStop then return end
+            
+            -- 3. Teleport back to Paw position to finalize accessory selection
+            if returnPosition then
+                TeleportTo(returnPosition) 
+                if ShouldStop then return end
                 
-                -- NEW WAIT: Wait here until the timer is detected (isGameActive becomes true)
-                while isBotEnabled and not isGameActive do
-                    updateBotStatusUI("Found Map. Waiting for Game Start...", Color3.fromRGB(255, 180, 0))
-                    task.wait(1) 
-                end
-
-                -- --- INNER TELEPORT LOOP (Only runs when isBotEnabled and isGameActive are true) ---
-                while isBotEnabled and isGameActive do
-                    print("\n--- STARTING NEW FORWARD CYCLE ---")
-                    
-                    -- FORWARD TRAVERSAL (1 -> 2 -> 3)
-                    for index = 1, #ShelfTargets do
-                        if not isBotEnabled or not isGameActive then break end
-                        local Target = ShelfTargets[index]
-                        
-                        -- 1. Go to Shelf and Click
-                        runShelfSequence(Target, TargetInteriorsFolder)
-
-                        -- 2. Return to Base and Click
-                        if not isBotEnabled or not isGameActive then break end
-                        print("Returning to Base Part...")
-                        HumanoidRootPart.CFrame = BasePartLocation
-                        task.wait(TeleportDelay)
-
-                        if isBotEnabled and isGameActive then 
-                            findAndClickTapButton()
-                            task.wait(TeleportDelay * 0.5)
-                            findAndClickPetButton() 
-                            task.wait(TeleportDelay * 0.5)
-                        end
-                    end
-
-                    if not isBotEnabled or not isGameActive then break end
-                    print("\n--- STARTING NEW BACKWARD CYCLE ---")
-                    
-                    -- BACKWARD TRAVERSAL (3 -> 2 -> 1)
-                    for index = #ShelfTargets, 1, -1 do
-                        if not isBotEnabled or not isGameActive then break end
-                        local Target = ShelfTargets[index]
-                        
-                        -- 1. Go to Shelf and Click
-                        runShelfSequence(Target, TargetInteriorsFolder)
-
-                        -- 2. Return to Base and Click
-                        if not isBotEnabled or not isGameActive then break end
-                        print("Returning to Base Part...")
-                        HumanoidRootPart.CFrame = BasePartLocation
-                        task.wait(TeleportDelay)
-
-                        if isBotEnabled and isGameActive then 
-                            findAndClickTapButton() 
-                            task.wait(TeleportDelay * 0.5) 
-                            findAndClickPetButton()
-                            task.wait(TeleportDelay * 0.5)
-                        end
-                    end
-
-                    if isBotEnabled and isGameActive then
-                        task.wait(2) -- Pause before next full cycle
-                    end
-                end
+                -- 4. Click all buttons in BasicSelects again (Confirmation/Put On)
+                clickAllBasicSelects() 
+                if ShouldStop then return end
             else
-                warn("ERROR: Could not find the Base Part. Error: " .. (BaseError or "Unknown") .. ". Waiting...")
+                warn("Return position (Paw) not provided. Cannot finalize accessory selection cycle.")
             end
+            
+        else
+            warn(string.format("Mannequin %s does not have a HumanoidRootPart. Skipping.", mannequinModel.Name))
         end
-
-        -- This final wait only executes if the map wasn't found (isMapReady is false) 
-        -- or if the inner teleport loop finished (game ended).
-        if not isMapReady or not (isBotEnabled and isGameActive) then
-            print("Script loop paused/stopped/waiting for map. Waiting 5 seconds...")
-            task.wait(5)
-        end
+    end
+    
+    if not ShouldStop then
+        print(string.format("--- Mannequin Cycle Finished. Visited %d locations. ---", targetsFound))
     end
 end
 
--- --- EXECUTION ---
+-- Function to handle Pet Paw teleportation and pet selection cycle
+local function teleportToPetPaws(minigameContainer)
+    print("--- STARTING PET PODIUM PAW TELEPORT & PET SELECTION CYCLE ---")
+    local petPodiumsContainer = minigameContainer:FindFirstChild("PetPodiums")
 
--- 1. Start the timer watch (continuously updates isGameActive and the UI)
-RunService.Heartbeat:Connect(checkTimer)
+    if not petPodiumsContainer or ShouldStop then warn("PetPodiums container not found or sequence stopped."); return end
 
--- 2. Start the main bot loop
-task.spawn(runBot)
+    local targetsFound = 0
+    for _, podiumModel in ipairs(petPodiumsContainer:GetChildren()) do
+        if ShouldStop then return end -- Stop check
+        
+        targetsFound = targetsFound + 1
+        local part1 = podiumModel:FindFirstChild("1")
+        local targetPaw = part1 and part1:FindFirstChild("Paw")
+
+        if targetPaw and targetPaw:IsA("BasePart") then
+            print(string.format("[PAW %d] Teleporting to Paw: %s", targetsFound, podiumModel.Name))
+            
+            -- 1. Teleport to Paw
+            TeleportTo(targetPaw.Position)
+            if ShouldStop then return end
+            
+            -- 2. Click pet button in GUI to select a pet
+            findAndClickPetButton() 
+            if ShouldStop then return end
+
+            -- 3. Close the Backpack App
+            closeBackpack()
+            if ShouldStop then return end
+        else
+            warn(string.format("Podium %s does not have a valid Paw part. Skipping.", podiumModel.Name))
+        end
+    end
+    
+    if not ShouldStop then
+        print(string.format("--- Pet Paw Cycle Finished. Visited %d Paw locations. ---", targetsFound))
+    end
+end
+
+-- Function containing the main execution logic
+local function runFullSequence(minigameContainer)
+    local initialTime = getCurrentTimerText()
+    
+    -- PRE-SEQUENCE TIMER CHECK: If the time is too low (e.g., 00:50 or lower), abort the start.
+    if initialTime and (initialTime <= TIMER_START_THRESHOLD) then
+        print(string.format("!! Initial timer check failed: %s is <= %s. Round is too late. Resetting search.", initialTime, TIMER_START_THRESHOLD))
+        return
+    end
+
+    IsSequenceActive = true
+    
+    -- Initial Teleport to the first Paw and store its position
+    local initialPawPosition = findFirstPawPosition(minigameContainer)
+
+    if initialPawPosition and not ShouldStop then
+        print("--- Initial Teleport: Moving to the first Pet Paw location. ---")
+        TeleportTo(initialPawPosition)
+    elseif not ShouldStop then
+        warn("Could not find an initial Pet Paw target. Starting full sequence immediately.")
+    end
+
+    -- Delay before starting the full sequence
+    if not ShouldStop then
+        task.wait(TELEPORT_DELAY * 2) -- A slightly longer initial wait
+    end
+
+    -- Execute both FULL teleport sequences in order
+    if not ShouldStop then
+        teleportToMannequins(minigameContainer, initialPawPosition) 
+    end
+    
+    if not ShouldStop then
+        teleportToPetPaws(minigameContainer)
+    end
+    
+    -- Final status update
+    if not ShouldStop then
+        print("--- FULL SEQUENCE COMPLETE. Waiting for timer reset to continue loop. ---")
+    else
+        print("--- Sequence was interrupted by timer. Resetting to search state. ---")
+    end
+    
+    IsSequenceActive = false
+    ShouldStop = false -- Reset stop flag for the next cycle
+end
+
+
+--------------------------------------------------------------------------------
+-- MAIN SCRIPT LOOP (CONTINUOUS SEARCH & RESTART)
+--------------------------------------------------------------------------------
+
+while true do
+    -- Continuous Search Output
+    print(string.format("Searching For %s Interior...", MINIGAME_CONTAINER_COMPONENTS[2]))
+    
+    local minigameContainer = Workspace
+    local foundAll = true
+
+    -- Traverse the path to find the common MINIGAME container
+    for i, name in ipairs(MINIGAME_CONTAINER_COMPONENTS) do
+        if not minigameContainer then break end
+
+        if name == "FashionFrenzy" then
+            minigameContainer = findChildByPrefix(minigameContainer, name)
+        elseif i == 1 then
+            -- Using WaitForChild for the top-level folder
+            minigameContainer = minigameContainer:WaitForChild(name, SEARCH_WAIT_TIME) 
+        else
+            minigameContainer = minigameContainer:FindFirstChild(name)
+        end
+
+        if not minigameContainer then
+            -- Only warn if it's the target component that couldn't be found
+            if i > 1 then warn("Could not find container at path component: " .. name) end
+            foundAll = false
+            break
+        end
+    end
+
+    -- If the container is found (implying the game round has started), run the sequence
+    if foundAll and minigameContainer then
+        print("Minigame container found. Starting full teleport sequence.")
+        runFullSequence(minigameContainer)
+    end
+
+    -- Wait before attempting to search/restart the cycle again
+    task.wait(SEARCH_WAIT_TIME)
+end
