@@ -8,6 +8,9 @@
     NEW FEATURE: 
     - It displays the full timer text on screen, cleaned of newlines.
     - It turns the display text RED when a teleport is about to occur (at 00:30 or 00:20).
+    - It includes a **Close button** to destroy the UI and stop all monitoring logic.
+    - **REVERTED:** UI is now two separate TextLabels and a Close button, not a single Frame.
+    - **UPDATED:** The Close button's vertical position has been adjusted down.
 
     ***IMPORTANT: MUST BE A LOCAL SCRIPT IN StarterPlayerScripts***
 
@@ -29,24 +32,33 @@ local CONFIG = {
         TimerPathParts = {'Interiors', 'MainMap!Fall', 'FashionFrenzyJoinZone', 'Billboard', 'BillboardGui', 'TimerLabel'},
         -- Path: Workspace.Interiors["MainMap!Fall"].FashionFrenzyJoinZone.Ring
         DestPathParts = {'Interiors', 'MainMap!Fall', 'FashionFrenzyJoinZone', 'Ring'},
-        -- UI configuration (Moved further down to 0.4)
-        UIPosition = UDim2.new(0.5, 0, 0.4, 0), -- Center horizontally, 40% down
-        UIName = "FashionFrenzyTimerDisplay"
+        -- UI configuration
+        UIName = "FashionFrenzyTimerDisplay",
+        Position = UDim2.new(0.5, 0, 0.35, 0), -- Position of the first timer (35% down)
+        Connection = nil -- Stores the connection object for cleanup
     },
     Hauntlet = {
         -- Path: Workspace.Interiors["MainMap!Fall"].HauntletMinigameJoinZone.Billboard.BillboardGui.TimerLabel
         TimerPathParts = {'Interiors', 'MainMap!Fall', 'HauntletMinigameJoinZone', 'Billboard', 'BillboardGui', 'TimerLabel'},
         -- Path: Workspace.Interiors["MainMap!Fall"].HauntletMinigameJoinZone.Ring
         DestPathParts = {'Interiors', 'MainMap!Fall', 'HauntletMinigameJoinZone', 'Ring'},
-        -- UI configuration (Moved further down to 0.45)
-        UIPosition = UDim2.new(0.5, 0, 0.45, 0), -- Center horizontally, 45% down
-        UIName = "HauntletTimerDisplay"
+        -- UI configuration
+        UIName = "HauntletTimerDisplay",
+        Position = UDim2.new(0.5, 0, 0.40, 0), -- Position of the second timer (40% down)
+        Connection = nil -- Stores the connection object for cleanup
     }
 }
+
+-- Position for the Close Button (placed near the top timer)
+-- Changed the Y offset from -20 to +5 to move the button down slightly.
+local CLOSE_BUTTON_POSITION = UDim2.new(0.5, 100, 0.35, 5) 
 
 -- Default and Warning colors
 local DEFAULT_COLOR = Color3.new(1, 1, 1)    -- White
 local ALERT_COLOR = Color3.new(1, 0, 0)      -- Red
+
+-- Store the main ScreenGui reference globally for easy destruction
+local ScreenGuiRef = nil 
 
 -- Utility function to safely find deep nested objects, waiting up to 10 seconds for each part
 local function safeFind(pathParts) -- Takes an array of strings (object names)
@@ -75,7 +87,6 @@ local function teleportPlayer(destinationPart)
     local Character = LocalPlayer.Character
     if not Character then 
         warn("[Teleport Fail] Character not found. Waiting for character to load...")
-        -- Wait for the character if it's not immediately available (e.g., if you die right before teleport)
         Character = LocalPlayer.CharacterAdded:Wait()
     end
 
@@ -91,43 +102,89 @@ local function teleportPlayer(destinationPart)
     print("[Teleport Success] Teleported to " .. destinationPart.Name)
 end
 
--- UI Setup Function
-local function createUI(configName, position)
+-- Function to handle cleanup and stopping the script
+local function stopMonitor()
+    print("[Stop Monitor] Disconnecting all timer events and cleaning up UI.")
+    
+    -- Disconnect all connections stored in CONFIG
+    for name, paths in pairs(CONFIG) do
+        if paths.Connection then
+            paths.Connection:Disconnect()
+            paths.Connection = nil
+            print("  - Disconnected " .. name .. " monitor.")
+        end
+    end
+
+    -- Destroy the UI (will destroy the ScreenGui and everything inside it)
+    if ScreenGuiRef and ScreenGuiRef.Parent then
+        ScreenGuiRef:Destroy()
+        ScreenGuiRef = nil
+        print("  - Destroyed MinigameTimerUI.")
+    end
+end
+
+-- UI Setup Function (Creates the ScreenGui and the Close button ONCE)
+local function ensureScreenGuiAndCloseButton()
     local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
     
-    -- Create ScreenGui if it doesn't exist
+    -- 1. Setup ScreenGui 
     local ScreenGui = PlayerGui:FindFirstChild("MinigameTimerUI")
     if not ScreenGui then
         ScreenGui = Instance.new("ScreenGui")
-        -- Corrected ScreenGui name
         ScreenGui.Name = "MinigameTimerUI"
         ScreenGui.Parent = PlayerGui
+        ScreenGuiRef = ScreenGui -- Set the global reference
     end
     
-    -- Create the TextLabel
+    -- 2. Create the Close Button (if it doesn't exist)
+    local CloseButton = ScreenGui:FindFirstChild("CloseMonitorButton")
+    if not CloseButton then
+        CloseButton = Instance.new("TextButton")
+        CloseButton.Name = "CloseMonitorButton"
+        CloseButton.Size = UDim2.new(0, 50, 0, 20)
+        -- Positioned to the right of the first timer label
+        CloseButton.Position = CLOSE_BUTTON_POSITION 
+        CloseButton.AnchorPoint = Vector2.new(0.5, 0)
+        CloseButton.Text = "X Close"
+        CloseButton.Font = Enum.Font.SourceSansBold
+        CloseButton.TextSize = 14
+        CloseButton.TextColor3 = Color3.new(1, 1, 1)
+        CloseButton.BackgroundColor3 = Color3.new(0.8, 0.1, 0.1) -- Red background
+        CloseButton.BorderSizePixel = 0
+        CloseButton.Parent = ScreenGui -- Parented directly to the ScreenGui
+        CloseButton.ZIndex = 3
+        
+        -- Connect the button click to the stopMonitor function
+        CloseButton.MouseButton1Click:Connect(stopMonitor)
+    end
+
+    return ScreenGui
+end
+
+-- Function to create the individual TextLabel for a timer
+local function createTimerLabel(configName, position)
+    local ScreenGui = ensureScreenGuiAndCloseButton()
+    
     local TimerDisplay = Instance.new("TextLabel")
     TimerDisplay.Name = configName
-    TimerDisplay.Size = UDim2.new(0, 300, 0, 30) -- Increased width to fit full text
+    TimerDisplay.Size = UDim2.new(0, 300, 0, 20) -- Fixed size
     TimerDisplay.Position = position
+    TimerDisplay.AnchorPoint = Vector2.new(0.5, 0) -- Center horizontally
     TimerDisplay.Text = configName .. " Timer: Waiting..."
     TimerDisplay.Font = Enum.Font.SourceSansBold
-    TimerDisplay.TextSize = 18
-    TimerDisplay.TextColor3 = DEFAULT_COLOR -- Start as white
+    TimerDisplay.TextSize = 16 
+    TimerDisplay.TextColor3 = DEFAULT_COLOR
     TimerDisplay.TextScaled = false
     TimerDisplay.TextWrapped = true
-    TimerDisplay.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1) -- Dark background
-    TimerDisplay.BackgroundTransparency = 0.2
+    TimerDisplay.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+    TimerDisplay.BackgroundTransparency = 0.8 -- Slightly transparent background
     TimerDisplay.BorderSizePixel = 0
     TimerDisplay.Parent = ScreenGui
-    
-    -- Add a small shadow for visibility
-    local Shadow = Instance.new("TextLabel")
-    Shadow.Size = TimerDisplay.Size + UDim2.new(0, 4, 0, 4)
-    Shadow.Position = UDim2.new(0, -2, 0, -2)
-    Shadow.BackgroundColor3 = Color3.new(0, 0, 0)
-    Shadow.BackgroundTransparency = 0.5
-    Shadow.ZIndex = TimerDisplay.ZIndex - 1
-    Shadow.Parent = TimerDisplay
+    TimerDisplay.ZIndex = 2 
+    TimerDisplay.TextXAlignment = Enum.TextXAlignment.Left 
+
+    -- Add a small shadow
+    TimerDisplay.TextStrokeTransparency = 0.8 
     
     return TimerDisplay
 end
@@ -135,7 +192,7 @@ end
 -- Function to set up monitoring for a single minigame
 local function setupMinigameMonitor(configName, paths)
     -- 0. Create the UI element for display
-    local uiDisplay = createUI(configName, paths.UIPosition)
+    local uiDisplay = createTimerLabel(paths.UIName, paths.Position)
     
     -- 1. Safely find the TimerLabel (source)
     local timerLabel = safeFind(paths.TimerPathParts)
@@ -172,7 +229,8 @@ local function setupMinigameMonitor(configName, paths)
         local isAlertTime = string.find(text, target30) or string.find(text, target20)
 
         -- UI Update: Update the on-screen display and color
-        uiDisplay.Text = configName .. " Timer: " .. text
+        -- Revert text formatting for floating labels (less space)
+        uiDisplay.Text = text 
         
         if isAlertTime then
             uiDisplay.TextColor3 = ALERT_COLOR -- Turn text RED for alert
@@ -185,8 +243,9 @@ local function setupMinigameMonitor(configName, paths)
         end
     end
 
-    -- 4. Connect the check to the Text property change event
-    timerLabel:GetPropertyChangedSignal("Text"):Connect(checkTimer)
+    -- 4. Connect the check to the Text property change event and store the connection
+    local connection = timerLabel:GetPropertyChangedSignal("Text"):Connect(checkTimer)
+    CONFIG[configName].Connection = connection
 
     -- Also run once on startup, just in case the timer is already at a target value
     checkTimer()
@@ -197,5 +256,6 @@ print("[Setup] Starting monitor tasks now (will wait for map parts)...")
 
 -- Run setup for all configured minigames
 for name, paths in pairs(CONFIG) do
+    -- task.spawn ensures monitors run concurrently without blocking the main script loop
     task.spawn(setupMinigameMonitor, name, paths) 
 end
