@@ -1,1 +1,201 @@
-print("this is a test!")
+--[[
+    Roblox Minigame Teleporter (LocalScript)
+
+    This script continuously monitors two specific TimerLabel Gui objects in the Workspace.
+    When the text of either timer changes to contain the specific target times ("00:30" or "00:20"), 
+    it teleports the LocalPlayer's character to the associated destination Part ("Ring").
+    
+    NEW FEATURE: 
+    - It displays the full timer text on screen, cleaned of newlines.
+    - It turns the display text RED when a teleport is about to occur (at 00:30 or 00:20).
+
+    ***IMPORTANT: MUST BE A LOCAL SCRIPT IN StarterPlayerScripts***
+
+    ***DEBUGGING ENABLED: If the script stops, the last message indicates the object it failed to find.***
+--]]
+
+print("--------------------------------------------------")
+print("[SCRIPT START] Minigame Teleporter script is now running.")
+
+-- Services and Global Variables
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+
+-- Configuration: Define the timers and their respective destinations using an array of object names.
+local CONFIG = {
+    FashionFrenzy = {
+        -- Path: Workspace.Interiors["MainMap!Fall"].FashionFrenzyJoinZone.Billboard.BillboardGui.TimerLabel
+        TimerPathParts = {'Interiors', 'MainMap!Fall', 'FashionFrenzyJoinZone', 'Billboard', 'BillboardGui', 'TimerLabel'},
+        -- Path: Workspace.Interiors["MainMap!Fall"].FashionFrenzyJoinZone.Ring
+        DestPathParts = {'Interiors', 'MainMap!Fall', 'FashionFrenzyJoinZone', 'Ring'},
+        -- UI configuration (Moved further down to 0.4)
+        UIPosition = UDim2.new(0.5, 0, 0.4, 0), -- Center horizontally, 40% down
+        UIName = "FashionFrenzyTimerDisplay"
+    },
+    Hauntlet = {
+        -- Path: Workspace.Interiors["MainMap!Fall"].HauntletMinigameJoinZone.Billboard.BillboardGui.TimerLabel
+        TimerPathParts = {'Interiors', 'MainMap!Fall', 'HauntletMinigameJoinZone', 'Billboard', 'BillboardGui', 'TimerLabel'},
+        -- Path: Workspace.Interiors["MainMap!Fall"].HauntletMinigameJoinZone.Ring
+        DestPathParts = {'Interiors', 'MainMap!Fall', 'HauntletMinigameJoinZone', 'Ring'},
+        -- UI configuration (Moved further down to 0.45)
+        UIPosition = UDim2.new(0.5, 0, 0.45, 0), -- Center horizontally, 45% down
+        UIName = "HauntletTimerDisplay"
+    }
+}
+
+-- Default and Warning colors
+local DEFAULT_COLOR = Color3.new(1, 1, 1)    -- White
+local ALERT_COLOR = Color3.new(1, 0, 0)      -- Red
+
+-- Utility function to safely find deep nested objects, waiting up to 10 seconds for each part
+local function safeFind(pathParts) -- Takes an array of strings (object names)
+    local current = Workspace 
+    local currentPath = "Workspace"
+
+    for _, partName in ipairs(pathParts) do
+        print("[Path Check] Currently looking for: '" .. partName .. "' inside of '" .. current.Name .. "'")
+        
+        -- Wait up to 10 seconds for the next part of the path to exist
+        local foundPart = current:WaitForChild(partName, 10) 
+        currentPath = currentPath .. "['" .. partName .. "']"
+        
+        if not foundPart then
+            warn("[Path ERROR] Failed to find: '" .. partName .. "'. The map might not be loaded yet, or the path is incorrect. (Full attempted path so far: " .. currentPath .. ")")
+            return nil
+        end
+        current = foundPart
+    end
+    print("[Path Success] Found object: " .. currentPath)
+    return current
+end
+
+-- Teleport function 
+local function teleportPlayer(destinationPart)
+    local Character = LocalPlayer.Character
+    if not Character then 
+        warn("[Teleport Fail] Character not found. Waiting for character to load...")
+        -- Wait for the character if it's not immediately available (e.g., if you die right before teleport)
+        Character = LocalPlayer.CharacterAdded:Wait()
+    end
+
+    local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+    if not HumanoidRootPart then 
+        warn("[Teleport Fail] HumanoidRootPart not found. Cannot teleport.")
+        return 
+    end
+
+    -- Move the character slightly above the destination part to prevent clipping
+    local destinationCFrame = destinationPart.CFrame * CFrame.new(0, 5, 0) 
+    HumanoidRootPart.CFrame = destinationCFrame
+    print("[Teleport Success] Teleported to " .. destinationPart.Name)
+end
+
+-- UI Setup Function
+local function createUI(configName, position)
+    local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+    
+    -- Create ScreenGui if it doesn't exist
+    local ScreenGui = PlayerGui:FindFirstChild("MinigameTimerUI")
+    if not ScreenGui then
+        ScreenGui = Instance.new("ScreenGui")
+        -- Corrected ScreenGui name
+        ScreenGui.Name = "MinigameTimerUI"
+        ScreenGui.Parent = PlayerGui
+    end
+    
+    -- Create the TextLabel
+    local TimerDisplay = Instance.new("TextLabel")
+    TimerDisplay.Name = configName
+    TimerDisplay.Size = UDim2.new(0, 300, 0, 30) -- Increased width to fit full text
+    TimerDisplay.Position = position
+    TimerDisplay.Text = configName .. " Timer: Waiting..."
+    TimerDisplay.Font = Enum.Font.SourceSansBold
+    TimerDisplay.TextSize = 18
+    TimerDisplay.TextColor3 = DEFAULT_COLOR -- Start as white
+    TimerDisplay.TextScaled = false
+    TimerDisplay.TextWrapped = true
+    TimerDisplay.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1) -- Dark background
+    TimerDisplay.BackgroundTransparency = 0.2
+    TimerDisplay.BorderSizePixel = 0
+    TimerDisplay.Parent = ScreenGui
+    
+    -- Add a small shadow for visibility
+    local Shadow = Instance.new("TextLabel")
+    Shadow.Size = TimerDisplay.Size + UDim2.new(0, 4, 0, 4)
+    Shadow.Position = UDim2.new(0, -2, 0, -2)
+    Shadow.BackgroundColor3 = Color3.new(0, 0, 0)
+    Shadow.BackgroundTransparency = 0.5
+    Shadow.ZIndex = TimerDisplay.ZIndex - 1
+    Shadow.Parent = TimerDisplay
+    
+    return TimerDisplay
+end
+
+-- Function to set up monitoring for a single minigame
+local function setupMinigameMonitor(configName, paths)
+    -- 0. Create the UI element for display
+    local uiDisplay = createUI(configName, paths.UIPosition)
+    
+    -- 1. Safely find the TimerLabel (source)
+    local timerLabel = safeFind(paths.TimerPathParts)
+    if not timerLabel or not timerLabel:IsA("TextLabel") then
+        warn("[Setup Fail] Failed to find valid TextLabel for " .. configName .. ". Aborting monitor setup.")
+        uiDisplay.Text = configName .. " Timer: [ERROR - Path Failed]"
+        return
+    end
+
+    -- 2. Safely find the Destination Part
+    local destinationPart = safeFind(paths.DestPathParts)
+    if not destinationPart or not destinationPart:IsA("BasePart") then
+        warn("[Setup Fail] Failed to find valid Destination Part for " .. configName .. ". Aborting monitor setup.")
+        return
+    end
+
+    print("[Monitor Active] Monitoring " .. configName .. " timer.")
+
+    -- 3. Define the monitoring logic
+    local function checkTimer(newText)
+        local rawText = newText or timerLabel.Text
+        
+        -- CLEANUP: Remove newlines and carriage returns for clean display and reliable detection
+        local text = rawText:gsub("[\r\n]", "")
+        
+        -- DEBUG: Print the exact text being detected every time it changes
+        print("[Text Update] " .. configName .. " timer text changed to: '" .. text .. "'")
+
+        -- Teleport Logic
+        local target30 = "00:30"
+        local target20 = "00:20"
+        
+        -- The string.find check uses the CLEANED text
+        local isAlertTime = string.find(text, target30) or string.find(text, target20)
+
+        -- UI Update: Update the on-screen display and color
+        uiDisplay.Text = configName .. " Timer: " .. text
+        
+        if isAlertTime then
+            uiDisplay.TextColor3 = ALERT_COLOR -- Turn text RED for alert
+            print("ALERT: " .. configName .. " is at target time.")
+            
+            -- Initiate teleport immediately after visual warning
+            teleportPlayer(destinationPart)
+        else
+            uiDisplay.TextColor3 = DEFAULT_COLOR -- Keep text white otherwise
+        end
+    end
+
+    -- 4. Connect the check to the Text property change event
+    timerLabel:GetPropertyChangedSignal("Text"):Connect(checkTimer)
+
+    -- Also run once on startup, just in case the timer is already at a target value
+    checkTimer()
+end
+
+-- NEW STARTUP SEQUENCE: Start monitor tasks immediately. The 'safeFind' calls will handle the waiting.
+print("[Setup] Starting monitor tasks now (will wait for map parts)...")
+
+-- Run setup for all configured minigames
+for name, paths in pairs(CONFIG) do
+    task.spawn(setupMinigameMonitor, name, paths) 
+end
