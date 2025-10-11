@@ -1,1 +1,472 @@
-print("coming soon!")
+-- Fix for: "Incomplete statement: expected assignment or a function call" error
+-- IMPORTANT: This must be placed as a LocalScript (e.g., in StarterPlayerScripts).
+-- This script contains the full auto-teleporter logic and a custom UI for status and control.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+-- Wait for essential player components
+if not LocalPlayer then
+    warn("LocalPlayer is nil. Aborting script.")
+    return
+end
+
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart", 10) -- Wait longer for HRP
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+if not HumanoidRootPart then
+    warn("Character or HumanoidRootPart not found. Aborting script.")
+    return
+end
+
+print("Fashion Frenzy Auto-Teleporter Initialized (With UI Control).")
+
+-- --- CONFIGURATION ---
+local TARGET_TIMER_PATH = "PlayerGui.FashionFrenzyInGameApp.Body.Left.Container.ValueLabel"
+local MAX_TIME_LIMIT = 50 -- Stop teleporting if the timer reaches this (in seconds)
+local TargetModelName = "FashionFrenzy"
+local TeleportDelay = 1.0 -- Wait 1 second between each major action
+
+-- The path components to the known, central part the player returns to.
+local BasePartPathComponents = {"Customize", "Minigame", "PetPodiums", "PetPodium1", "1", "Block"}
+
+-- Define the three shelf targets
+local ShelfTargets = {
+    {Name = "SHELF 1", BasePath = {"Customize", "Visual"}, Index = 3, FinalPartName = "Collider"},
+    {Name = "SHELF 2", BasePath = {"Customize", "Visual", "Shelves", "Collider"}},
+    {Name = "SHELF 3", BasePath = {"Customize", "Visual"}, Index = 11, FinalPartName = "Collider"},
+}
+
+-- --- BOT CONTROL STATE ---
+local isBotEnabled = true     -- Toggled by the UI button
+local isGameActive = false    -- Toggled by the in-game timer
+local StatusLabel -- Forward declaration for UI element
+local ToggleButton -- Forward declaration for UI element
+
+-- --- UI SETUP FUNCTIONS ---
+
+-- Helper to update the UI status text and color
+local function updateBotStatusUI(statusText, color)
+    if StatusLabel then
+        StatusLabel.Text = statusText
+        StatusLabel.TextColor3 = color
+    end
+end
+
+-- Helper to update the button appearance
+local function updateButtonState(enabled)
+    if ToggleButton then
+        if enabled then
+            -- Set to Green and text to ON/STOP
+            ToggleButton.BackgroundColor3 = Color3.fromRGB(85, 255, 85) -- Bright Green for ON
+            ToggleButton.Text = "SCRIPT IS ON"
+        else
+            -- Set to Red and text to OFF/START
+            ToggleButton.BackgroundColor3 = Color3.fromRGB(255, 60, 60) -- Red for OFF
+            ToggleButton.Text = "SCRIPT IS OFF"
+        end
+    end
+end
+
+-- Toggle function, connected to the button click
+local function toggleBot()
+    isBotEnabled = not isBotEnabled
+    updateButtonState(isBotEnabled)
+    print("Bot manually toggled: " .. (isBotEnabled and "ON" or "OFF"))
+    
+    if not isBotEnabled then
+        updateBotStatusUI("Script Disabled (Manual Stop)", Color3.fromRGB(255, 150, 0))
+    else
+        -- When re-enabled, rely on the timer to determine the true game status
+        updateBotStatusUI("Searching For Fashion Frenzy...", Color3.fromRGB(255, 255, 150))
+    end
+end
+
+-- --- UI CREATION (Using the user's provided structure) ---
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "BotStatusUI"
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Enabled = true -- Ensure the UI is visible
+ScreenGui.Parent = PlayerGui
+print("UI: ScreenGui ('BotStatusUI') created and parented successfully.") 
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 320, 0, 80) 
+-- POSITION ADJUSTED: Centered horizontally (0.5, -160) and further down from the top (0, 100)
+MainFrame.Position = UDim2.new(0.5, -160, 0, 100)
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 40) -- Dark Navy
+MainFrame.BorderSizePixel = 0
+-- FIX: MainFrame must be parented to the ScreenGui, not itself.
+MainFrame.Parent = ScreenGui
+
+-- Rounded corners
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 12)
+UICorner.Parent = MainFrame
+ 
+-- Aesthetic border/glow
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Thickness = 3
+UIStroke.Color = Color3.fromRGB(100, 100, 255) -- Blue border
+UIStroke.Parent = MainFrame
+ 
+-- Status Label
+StatusLabel = Instance.new("TextLabel")
+StatusLabel.Name = "StatusText"
+StatusLabel.Size = UDim2.new(1, 0, 0.5, 0)
+StatusLabel.Position = UDim2.new(0, 0, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Searching For Fashion Frenzy..."
+StatusLabel.Font = Enum.Font.SourceSansBold
+StatusLabel.TextSize = 18 
+StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 150) -- Initial Yellow
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+StatusLabel.TextYAlignment = Enum.TextYAlignment.Center
+StatusLabel.Parent = MainFrame
+ 
+-- Toggle Button
+ToggleButton = Instance.new("TextButton")
+ToggleButton.Name = "ToggleButton"
+ToggleButton.Size = UDim2.new(0.8, 0, 0.4, 0)
+ToggleButton.Position = UDim2.new(0.1, 0, 0.55, 0)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(85, 255, 85) -- Initial Green for ON
+ToggleButton.Text = "SCRIPT IS ON" -- Updated text
+ToggleButton.Font = Enum.Font.SourceSansBold
+ToggleButton.TextSize = 18
+ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleButton.Parent = MainFrame
+ 
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 6)
+ToggleCorner.Parent = ToggleButton
+
+local ToggleStroke = Instance.new("UIStroke")
+ToggleStroke.Thickness = 1
+ToggleStroke.Color = Color3.fromRGB(0, 0, 0)
+ToggleStroke.Parent = ToggleButton
+
+-- Connect the button and set initial state
+ToggleButton.Activated:Connect(toggleBot)
+updateButtonState(isBotEnabled)
+
+
+-- --- TIMER LOGIC ---
+
+-- Function to safely get the timer object and convert it to total seconds
+local function getTimerValue()
+    local pathComponents = string.split(TARGET_TIMER_PATH, ".")
+    local currentObject = LocalPlayer 
+
+    if pathComponents[1] == "PlayerGui" then
+        table.remove(pathComponents, 1)
+    end
+    
+    for _, component in ipairs(pathComponents) do
+        currentObject = currentObject:FindFirstChild(component)
+        if not currentObject then
+            return nil
+        end
+    end
+    
+    if currentObject then
+        local timeString = nil
+        
+        if currentObject:IsA("TextLabel") or currentObject:IsA("TextButton") then
+            timeString = currentObject.Text
+        elseif currentObject:IsA("ValueBase") then
+            if type(currentObject.Value) == "string" then
+                timeString = currentObject.Value
+            elseif type(currentObject.Value) == "number" then
+                return currentObject.Value
+            end
+        end
+        
+        if timeString then
+            local minutes, seconds = timeString:match("(%d+):(%d+)")
+            if minutes and seconds then
+                return (tonumber(minutes) * 60) + tonumber(seconds)
+            end
+        end
+    end
+    
+    return nil
+end
+
+-- Main function to check the timer value and update the bot state
+local function checkTimer()
+    local currentTime = getTimerValue()
+    local oldIsGameActive = isGameActive
+    
+    if currentTime == nil then
+        isGameActive = false
+        if oldIsGameActive then
+            print("STATUS: Timer disappeared. Stopping game active state.")
+            updateBotStatusUI("Game Round Ended/Not Found", Color3.fromRGB(255, 150, 0))
+        elseif isBotEnabled then
+             -- THIS IS WHERE THE UI SHOWS "SEARCHING"
+             updateBotStatusUI("Searching For Fashion Frenzy...", Color3.fromRGB(255, 255, 150))
+        end
+    elseif type(currentTime) == "number" then
+        if currentTime >= MAX_TIME_LIMIT then
+            isGameActive = false
+            if oldIsGameActive then
+                print(string.format("STATUS: Timer reached %d seconds. Game ending soon.", MAX_TIME_LIMIT))
+                updateBotStatusUI("Time Limit Reached (" .. MAX_TIME_LIMIT .. "s)", Color3.fromRGB(255, 100, 100))
+            end
+        else
+            isGameActive = true
+            if not oldIsGameActive then
+                 print(string.format("STATUS: Game Active (Time: %ds). Script Ready.", math.floor(currentTime)))
+            end
+            if isBotEnabled then
+                updateBotStatusUI("GAME ACTIVE | Time: " .. math.floor(currentTime) .. "s", Color3.fromRGB(85, 255, 85))
+            end
+        end
+    end
+end
+
+-- --- UTILITIES & ACTIONS ---
+
+-- Utility function to safely find an object by a list of names
+local function FindObjectByPath(root, pathComponents)
+    local current = root
+    for _, name in ipairs(pathComponents) do
+        local nextChild = current:FindFirstChild(name)
+        if nextChild then
+            current = nextChild
+        else
+            return nil, string.format("Failed at component: '%s'", name)
+        end
+    end
+    return current
+end
+
+-- Use :Activate() for simulating button clicks
+local function clickAction(button, actionName)
+    if not button or not (button:IsA("TextButton") or button:IsA("ImageButton")) then return end
+
+    pcall(function()
+        button:Activate()
+    end)
+    
+    task.wait(0.1)
+end
+
+-- Action 1: Clicks TapButton in InteractionsApp (for shelves/base)
+local function findAndClickTapButton()
+    local TargetButtonName = "TapButton"
+    
+    local TargetContainer = LocalPlayer.PlayerGui:FindFirstChild("InteractionsApp")
+    if TargetContainer then
+        TargetContainer = TargetContainer:FindFirstChild("BasicSelects")
+    end
+
+    if not TargetContainer or not TargetContainer:IsA("GuiObject") then
+        return
+    end
+    
+    for _, descendant in ipairs(TargetContainer:GetDescendants()) do
+        if descendant.Name == TargetButtonName and (descendant:IsA("TextButton") or descendant:IsA("ImageButton")) then
+            clickAction(descendant, "Tap Action")
+            task.wait(0.1) 
+            return
+        end
+    end
+end
+
+-- Action 2: Clicks a button in BackpackApp (for selecting a pet at base)
+local function findAndClickPetButton()
+    local TargetButtonName = "Button" 
+    
+    local TargetContainer = LocalPlayer.PlayerGui:FindFirstChild("BackpackApp")
+    if TargetContainer then 
+        TargetContainer = TargetContainer:FindFirstChild("Frame") 
+        if TargetContainer then 
+            TargetContainer = TargetContainer:FindFirstChild("Body")
+            if TargetContainer then
+                -- Path to the pet items
+                TargetContainer = TargetContainer:FindFirstChild("ScrollComplex"):FindFirstChild("ScrollingFrame"):FindFirstChild("Content"):FindFirstChild("pets"):FindFirstChild("Row0")
+            end
+        end 
+    end
+
+    if not TargetContainer or not TargetContainer:IsA("GuiObject") then
+        return
+    end
+
+    for _, frameChild in ipairs(TargetContainer:GetChildren()) do
+        if frameChild.Name:lower():match("add_more_pets") then 
+            continue
+        end
+
+        if frameChild:IsA("GuiObject") then
+            local buttonToClick = frameChild:FindFirstChild(TargetButtonName, true)
+            
+            if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
+                clickAction(buttonToClick, "Pet Action")
+                task.wait(0.1) 
+                return
+            end
+        end
+    end
+end
+
+-- Helper function to perform the teleport and click sequence for a single shelf target
+local function runShelfSequence(Target, TargetInteriorsFolder)
+    -- Bot must be manually enabled AND game must be active
+    if not isBotEnabled or not isGameActive then return end 
+    
+    local TargetPart = nil
+    
+    -- Logic to find the specific shelf part
+    if Target.Index then
+        local ParentModel, ParentError = FindObjectByPath(TargetInteriorsFolder, Target.BasePath)
+        
+        if ParentModel then
+            local children = ParentModel:GetChildren()
+            if children[Target.Index] then
+                TargetPart = children[Target.Index]:FindFirstChild(Target.FinalPartName)
+            end
+        else
+            warn(string.format("Path Error for %s: %s", Target.Name, ParentError or "Unknown"))
+        end
+    else
+        TargetPart, DirectError = FindObjectByPath(TargetInteriorsFolder, Target.BasePath)
+        if not TargetPart then
+            warn(string.format("Path Error for %s: %s", Target.Name, DirectError or "Unknown"))
+        end
+    end
+
+    if TargetPart and TargetPart:IsA("BasePart") then
+        local ShelfLocation = TargetPart.CFrame * CFrame.new(0, 5, 0)
+        
+        -- TELEPORT 1: Go to the Shelf
+        print(string.format("Teleporting to %s", Target.Name))
+        HumanoidRootPart.CFrame = ShelfLocation
+        task.wait(TeleportDelay)
+        
+        -- ACTION 1: Click at the Shelf (InteractionsApp)
+        if isBotEnabled and isGameActive then 
+            findAndClickTapButton()
+            task.wait(TeleportDelay)
+        end
+        
+    else
+        warn(string.format("Skipping %s: Target part could not be found or is not a BasePart.", Target.Name))
+    end
+end
+
+-- Main function for the entire loop
+local function runBot()
+    -- Outer loop ensures the bot keeps running to find the game model/map
+    while true do
+        
+        local TargetInteriorsFolder = nil
+        local Interiors = Workspace:FindFirstChild("Interiors") 
+        if Interiors then
+            for _, child in ipairs(Interiors:GetChildren()) do
+                if child.Name:sub(1, #TargetModelName) == TargetModelName and child:IsA("Model") then
+                    TargetInteriorsFolder = child
+                    print("Found active game model: " .. child.Name)
+                    break
+                end
+            end
+        end
+
+        local isMapReady = false
+        if TargetInteriorsFolder then
+            -- Find the fixed return location
+            local BasePart, BaseError = FindObjectByPath(TargetInteriorsFolder, BasePartPathComponents)
+
+            if BasePart and BasePart:IsA("BasePart") then
+                isMapReady = true
+                local BasePartLocation = BasePart.CFrame * CFrame.new(0, 5, 0) -- Location to return to
+
+                print("Map and Base Part found. Waiting for game to become active...")
+                
+                -- NEW WAIT: Wait here until the timer is detected (isGameActive becomes true)
+                while isBotEnabled and not isGameActive do
+                    updateBotStatusUI("Found Map. Waiting for Game Start...", Color3.fromRGB(255, 180, 0))
+                    task.wait(1) 
+                end
+
+                -- --- INNER TELEPORT LOOP (Only runs when isBotEnabled and isGameActive are true) ---
+                while isBotEnabled and isGameActive do
+                    print("\n--- STARTING NEW FORWARD CYCLE ---")
+                    
+                    -- FORWARD TRAVERSAL (1 -> 2 -> 3)
+                    for index = 1, #ShelfTargets do
+                        if not isBotEnabled or not isGameActive then break end
+                        local Target = ShelfTargets[index]
+                        
+                        -- 1. Go to Shelf and Click
+                        runShelfSequence(Target, TargetInteriorsFolder)
+
+                        -- 2. Return to Base and Click
+                        if not isBotEnabled or not isGameActive then break end
+                        print("Returning to Base Part...")
+                        HumanoidRootPart.CFrame = BasePartLocation
+                        task.wait(TeleportDelay)
+
+                        if isBotEnabled and isGameActive then 
+                            findAndClickTapButton()
+                            task.wait(TeleportDelay * 0.5)
+                            findAndClickPetButton() 
+                            task.wait(TeleportDelay * 0.5)
+                        end
+                    end
+
+                    if not isBotEnabled or not isGameActive then break end
+                    print("\n--- STARTING NEW BACKWARD CYCLE ---")
+                    
+                    -- BACKWARD TRAVERSAL (3 -> 2 -> 1)
+                    for index = #ShelfTargets, 1, -1 do
+                        if not isBotEnabled or not isGameActive then break end
+                        local Target = ShelfTargets[index]
+                        
+                        -- 1. Go to Shelf and Click
+                        runShelfSequence(Target, TargetInteriorsFolder)
+
+                        -- 2. Return to Base and Click
+                        if not isBotEnabled or not isGameActive then break end
+                        print("Returning to Base Part...")
+                        HumanoidRootPart.CFrame = BasePartLocation
+                        task.wait(TeleportDelay)
+
+                        if isBotEnabled and isGameActive then 
+                            findAndClickTapButton() 
+                            task.wait(TeleportDelay * 0.5) 
+                            findAndClickPetButton()
+                            task.wait(TeleportDelay * 0.5)
+                        end
+                    end
+
+                    if isBotEnabled and isGameActive then
+                        task.wait(2) -- Pause before next full cycle
+                    end
+                end
+            else
+                warn("ERROR: Could not find the Base Part. Error: " .. (BaseError or "Unknown") .. ". Waiting...")
+            end
+        end
+
+        -- This final wait only executes if the map wasn't found (isMapReady is false) 
+        -- or if the inner teleport loop finished (game ended).
+        if not isMapReady or not (isBotEnabled and isGameActive) then
+            print("Script loop paused/stopped/waiting for map. Waiting 5 seconds...")
+            task.wait(5)
+        end
+    end
+end
+
+-- --- EXECUTION ---
+
+-- 1. Start the timer watch (continuously updates isGameActive and the UI)
+RunService.Heartbeat:Connect(checkTimer)
+
+-- 2. Start the main bot loop
+task.spawn(runBot)
