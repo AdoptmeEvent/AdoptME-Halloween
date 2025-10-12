@@ -50,7 +50,7 @@ local function createStatusUI()
     statusLabel = Instance.new("TextLabel")
     statusLabel.Name = "TeleportCounter"
     statusLabel.Size = UDim2.new(0, 600, 0, 40) -- Increased width to 600
-    statusLabel.Position = UDim2.new(0.5, -300, 0, 10) -- Centered
+    statusLabel.Position = UDim2.new({0.513, -300},{0.126, 10}) -- Centered
     statusLabel.BackgroundColor3 = Color3.new(0, 0, 0)
     statusLabel.BackgroundTransparency = 0.3
     statusLabel.BorderSizePixel = 0
