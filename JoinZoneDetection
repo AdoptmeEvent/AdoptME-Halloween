@@ -1,20 +1,24 @@
 --[[
+
+
+print("v1.0.0")
     Roblox Minigame Teleporter (LocalScript)
 
     This script continuously monitors two specific TimerLabel Gui objects in the Workspace.
-    When the text of either timer changes to contain the specific target times ("00:30" or "00:20"), 
+    When the text of either timer changes to contain the specific target times ("00:30" or "00:20"),
     it teleports the LocalPlayer's character to the associated destination Part ("Ring").
+
+    CRITICAL FIX FOR MONITORING STOPPAGE:
+    - The monitoring logic is now contained within a **persistent while true do loop**.
+    - If the target Timer object is destroyed (due to game streaming/map cycle), the loop will
+      automatically search for the object again and **re-establish the connection**.
     
-    NEW FEATURE: 
-    - It displays the full timer text on screen, cleaned of newlines.
-    - It turns the display text RED when a teleport is about to occur (at 00:30 or 00:20).
-    - It includes a **Close button** to destroy the UI and stop all monitoring logic.
-    - **REVERTED:** UI is now two separate TextLabels and a Close button, not a single Frame.
-    - **UPDATED:** The Close button's vertical position has been adjusted down.
-
+    FIX/ENHANCEMENTS:
+    - Removed 'goto' statements for improved compatibility.
+    - Added an internal **hasTeleported** flag (debounce) to prevent duplicate teleports.
+    - Teleport function includes a retry loop for character availability (resilience against respawns).
+    
     ***IMPORTANT: MUST BE A LOCAL SCRIPT IN StarterPlayerScripts***
-
-    ***DEBUGGING ENABLED: If the script stops, the last message indicates the object it failed to find.***
 --]]
 
 print("--------------------------------------------------")
@@ -25,55 +29,60 @@ local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local Workspace = game:GetService("Workspace")
 
--- Configuration: Define the timers and their respective destinations using an array of object names.
+-- Configuration: Define the timers and their respective destinations.
 local CONFIG = {
     FashionFrenzy = {
         -- Path: Workspace.Interiors["MainMap!Fall"].FashionFrenzyJoinZone.Billboard.BillboardGui.TimerLabel
         TimerPathParts = {'Interiors', 'MainMap!Fall', 'FashionFrenzyJoinZone', 'Billboard', 'BillboardGui', 'TimerLabel'},
         -- Path: Workspace.Interiors["MainMap!Fall"].FashionFrenzyJoinZone.Ring
         DestPathParts = {'Interiors', 'MainMap!Fall', 'FashionFrenzyJoinZone', 'Ring'},
+        -- Runtime References
+        TimerObject = nil, -- **NEW: Stores the current TextLabel instance**
+        Connection = nil,  -- Stores the connection object for cleanup
+        hasTeleported = false, -- Debounce flag
         -- UI configuration
         UIName = "FashionFrenzyTimerDisplay",
         Position = UDim2.new(0.5, 0, 0.35, 0), -- Position of the first timer (35% down)
-        Connection = nil -- Stores the connection object for cleanup
     },
     Hauntlet = {
         -- Path: Workspace.Interiors["MainMap!Fall"].HauntletMinigameJoinZone.Billboard.BillboardGui.TimerLabel
         TimerPathParts = {'Interiors', 'MainMap!Fall', 'HauntletMinigameJoinZone', 'Billboard', 'BillboardGui', 'TimerLabel'},
         -- Path: Workspace.Interiors["MainMap!Fall"].HauntletMinigameJoinZone.Ring
         DestPathParts = {'Interiors', 'MainMap!Fall', 'HauntletMinigameJoinZone', 'Ring'},
+        -- Runtime References
+        TimerObject = nil, -- **NEW: Stores the current TextLabel instance**
+        Connection = nil,  -- Stores the connection object for cleanup
+        hasTeleported = false, -- Debounce flag
         -- UI configuration
         UIName = "HauntletTimerDisplay",
         Position = UDim2.new(0.5, 0, 0.40, 0), -- Position of the second timer (40% down)
-        Connection = nil -- Stores the connection object for cleanup
     }
 }
 
--- Position for the Close Button (placed near the top timer)
--- Changed the Y offset from -20 to +5 to move the button down slightly.
-local CLOSE_BUTTON_POSITION = UDim2.new(0.5, 100, 0.35, 5) 
+-- Position for the Close Button
+local CLOSE_BUTTON_POSITION = UDim2.new(0.5, 150, 0.35, 0) 
 
 -- Default and Warning colors
-local DEFAULT_COLOR = Color3.new(1, 1, 1)    -- White
-local ALERT_COLOR = Color3.new(1, 0, 0)      -- Red
+local DEFAULT_COLOR = Color3.new(0.9, 0.9, 0.9) -- Off-white/Light Gray
+local ALERT_COLOR = Color3.new(1, 0.2, 0.2)   -- Bright Red
 
 -- Store the main ScreenGui reference globally for easy destruction
-local ScreenGuiRef = nil 
+local ScreenGuiRef = nil
 
 -- Utility function to safely find deep nested objects, waiting up to 10 seconds for each part
 local function safeFind(pathParts) -- Takes an array of strings (object names)
-    local current = Workspace 
+    local current = Workspace
     local currentPath = "Workspace"
 
     for _, partName in ipairs(pathParts) do
         print("[Path Check] Currently looking for: '" .. partName .. "' inside of '" .. current.Name .. "'")
         
         -- Wait up to 10 seconds for the next part of the path to exist
-        local foundPart = current:WaitForChild(partName, 10) 
+        local foundPart = current:WaitForChild(partName, 10)
         currentPath = currentPath .. "['" .. partName .. "']"
         
         if not foundPart then
-            warn("[Path ERROR] Failed to find: '" .. partName .. "'. The map might not be loaded yet, or the path is incorrect. (Full attempted path so far: " .. currentPath .. ")")
+            warn("[Path ERROR] Failed to find: '" .. partName .. "'. (Full path: " .. currentPath .. ")")
             return nil
         end
         current = foundPart
@@ -82,24 +91,39 @@ local function safeFind(pathParts) -- Takes an array of strings (object names)
     return current
 end
 
--- Teleport function 
+-- Teleport function with retry logic
 local function teleportPlayer(destinationPart)
-    local Character = LocalPlayer.Character
-    if not Character then 
-        warn("[Teleport Fail] Character not found. Waiting for character to load...")
-        Character = LocalPlayer.CharacterAdded:Wait()
+    local wasSuccessful = false
+    -- Try up to 3 times with a short wait, in case the character is being reset/respawned
+    for i = 1, 3 do
+        local Character = LocalPlayer.Character
+        
+        -- 1. Check if the character exists
+        if not Character then 
+            warn(string.format("[Teleport Fail %d/3] Character not found. Waiting 0.5s...", i))
+            task.wait(0.5)
+            continue
+        end
+
+        local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+        -- 2. Check if the HRP exists (essential for CFrame manipulation)
+        if not HumanoidRootPart then 
+            warn(string.format("[Teleport Fail %d/3] HumanoidRootPart not found. Waiting 0.5s...", i))
+            task.wait(0.5)
+            continue
+        end
+
+        -- Success: Move the character slightly above the destination part
+        local destinationCFrame = destinationPart.CFrame * CFrame.new(0, 5, 0) 
+        HumanoidRootPart.CFrame = destinationCFrame
+        print("[Teleport Success] Teleported to " .. destinationPart.Name)
+        wasSuccessful = true
+        break -- Teleport succeeded, exit the retry loop
     end
 
-    local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
-    if not HumanoidRootPart then 
-        warn("[Teleport Fail] HumanoidRootPart not found. Cannot teleport.")
-        return 
+    if not wasSuccessful then
+        warn("[Teleport Fail FINAL] Failed to teleport after multiple attempts.")
     end
-
-    -- Move the character slightly above the destination part to prevent clipping
-    local destinationCFrame = destinationPart.CFrame * CFrame.new(0, 5, 0) 
-    HumanoidRootPart.CFrame = destinationCFrame
-    print("[Teleport Success] Teleported to " .. destinationPart.Name)
 end
 
 -- Function to handle cleanup and stopping the script
@@ -133,6 +157,7 @@ local function ensureScreenGuiAndCloseButton()
         ScreenGui = Instance.new("ScreenGui")
         ScreenGui.Name = "MinigameTimerUI"
         ScreenGui.Parent = PlayerGui
+        ScreenGui.DisplayOrder = 100 -- Ensure it's on top of game UI
         ScreenGuiRef = ScreenGui -- Set the global reference
     end
     
@@ -141,20 +166,23 @@ local function ensureScreenGuiAndCloseButton()
     if not CloseButton then
         CloseButton = Instance.new("TextButton")
         CloseButton.Name = "CloseMonitorButton"
-        CloseButton.Size = UDim2.new(0, 50, 0, 20)
-        -- Positioned to the right of the first timer label
+        CloseButton.Size = UDim2.new(0, 80, 0, 24) -- Slightly larger
         CloseButton.Position = CLOSE_BUTTON_POSITION 
         CloseButton.AnchorPoint = Vector2.new(0.5, 0)
-        CloseButton.Text = "X Close"
+        CloseButton.Text = "X Stop"
         CloseButton.Font = Enum.Font.SourceSansBold
-        CloseButton.TextSize = 14
+        CloseButton.TextSize = 16
         CloseButton.TextColor3 = Color3.new(1, 1, 1)
-        CloseButton.BackgroundColor3 = Color3.new(0.8, 0.1, 0.1) -- Red background
+        CloseButton.BackgroundColor3 = Color3.new(0.9, 0.2, 0.2)
         CloseButton.BorderSizePixel = 0
-        CloseButton.Parent = ScreenGui -- Parented directly to the ScreenGui
+        CloseButton.Parent = ScreenGui
         CloseButton.ZIndex = 3
         
-        -- Connect the button click to the stopMonitor function
+        -- Add a corner for a modern look
+        local UICorner = Instance.new("UICorner")
+        UICorner.CornerRadius = UDim.new(0, 6)
+        UICorner.Parent = CloseButton
+        
         CloseButton.MouseButton1Click:Connect(stopMonitor)
     end
 
@@ -165,97 +193,141 @@ end
 local function createTimerLabel(configName, position)
     local ScreenGui = ensureScreenGuiAndCloseButton()
     
-    local TimerDisplay = Instance.new("TextLabel")
-    TimerDisplay.Name = configName
-    TimerDisplay.Size = UDim2.new(0, 300, 0, 20) -- Fixed size
-    TimerDisplay.Position = position
-    TimerDisplay.AnchorPoint = Vector2.new(0.5, 0) -- Center horizontally
-    TimerDisplay.Text = configName .. " Timer: Waiting..."
-    TimerDisplay.Font = Enum.Font.SourceSansBold
-    TimerDisplay.TextSize = 16 
-    TimerDisplay.TextColor3 = DEFAULT_COLOR
-    TimerDisplay.TextScaled = false
-    TimerDisplay.TextWrapped = true
-    TimerDisplay.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
-    TimerDisplay.BackgroundTransparency = 0.8 -- Slightly transparent background
-    TimerDisplay.BorderSizePixel = 0
-    TimerDisplay.Parent = ScreenGui
-    TimerDisplay.ZIndex = 2 
-    TimerDisplay.TextXAlignment = Enum.TextXAlignment.Left 
+    local TimerDisplay = ScreenGui:FindFirstChild(configName)
+    
+    if not TimerDisplay then
+        TimerDisplay = Instance.new("TextLabel")
+        TimerDisplay.Name = configName
+        TimerDisplay.Size = UDim2.new(0, 200, 0, 24) 
+        TimerDisplay.Position = position
+        TimerDisplay.AnchorPoint = Vector2.new(0.5, 0)
+        TimerDisplay.Font = Enum.Font.SourceSansBold
+        TimerDisplay.TextSize = 18
+        TimerDisplay.TextColor3 = DEFAULT_COLOR
+        TimerDisplay.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+        TimerDisplay.BackgroundTransparency = 0.6
+        TimerDisplay.BorderSizePixel = 0
+        TimerDisplay.Parent = ScreenGui
+        TimerDisplay.ZIndex = 2
+        TimerDisplay.TextXAlignment = Enum.TextXAlignment.Center 
+        
+        local UICorner = Instance.new("UICorner")
+        UICorner.CornerRadius = UDim.new(0, 6)
+        UICorner.Parent = TimerDisplay
+        TimerDisplay.TextStrokeTransparency = 0.8
+    end
 
-    -- Add a small shadow
-    TimerDisplay.TextStrokeTransparency = 0.8 
+    TimerDisplay.Text = configName .. " Timer: Waiting..."
     
     return TimerDisplay
 end
 
--- Function to set up monitoring for a single minigame
-local function setupMinigameMonitor(configName, paths)
-    -- 0. Create the UI element for display
+-- The persistent monitoring loop (replaces setupMinigameMonitor)
+local function startMonitorLoop(configName, paths)
     local uiDisplay = createTimerLabel(paths.UIName, paths.Position)
-    
-    -- 1. Safely find the TimerLabel (source)
-    local timerLabel = safeFind(paths.TimerPathParts)
-    if not timerLabel or not timerLabel:IsA("TextLabel") then
-        warn("[Setup Fail] Failed to find valid TextLabel for " .. configName .. ". Aborting monitor setup.")
-        uiDisplay.Text = configName .. " Timer: [ERROR - Path Failed]"
-        return
-    end
+    local destinationPart = nil -- Must be found before connecting
 
-    -- 2. Safely find the Destination Part
-    local destinationPart = safeFind(paths.DestPathParts)
-    if not destinationPart or not destinationPart:IsA("BasePart") then
-        warn("[Setup Fail] Failed to find valid Destination Part for " .. configName .. ". Aborting monitor setup.")
-        return
-    end
-
-    print("[Monitor Active] Monitoring " .. configName .. " timer.")
-
-    -- 3. Define the monitoring logic
+    -- Define the monitoring logic once
     local function checkTimer(newText)
-        local rawText = newText or timerLabel.Text
-        
-        -- CLEANUP: Remove newlines and carriage returns for clean display and reliable detection
+        -- Check if we still have a valid destinationPart (should always be true here)
+        if not destinationPart or not destinationPart.Parent then
+            warn(string.format("[Monitor Error] Destination part for %s lost! Disconnecting monitor.", configName))
+            paths.Connection:Disconnect()
+            paths.Connection = nil -- Force a reconnect attempt
+            paths.TimerObject = nil
+            return
+        end
+
+        local rawText = newText or paths.TimerObject.Text
         local text = rawText:gsub("[\r\n]", "")
         
-        -- DEBUG: Print the exact text being detected every time it changes
         print("[Text Update] " .. configName .. " timer text changed to: '" .. text .. "'")
 
-        -- Teleport Logic
         local target30 = "00:30"
         local target20 = "00:20"
         
-        -- The string.find check uses the CLEANED text
-        local isAlertTime = string.find(text, target30) or string.find(text, target20)
+        local isAlertTime = string.find(text, target30, 1, true) or string.find(text, target20, 1, true)
 
-        -- UI Update: Update the on-screen display and color
-        -- Revert text formatting for floating labels (less space)
-        uiDisplay.Text = text 
-        
+        -- UI Update
+        uiDisplay.Text = configName .. ": " .. text 
+
         if isAlertTime then
-            uiDisplay.TextColor3 = ALERT_COLOR -- Turn text RED for alert
-            print("ALERT: " .. configName .. " is at target time.")
-            
-            -- Initiate teleport immediately after visual warning
-            teleportPlayer(destinationPart)
+            if not paths.hasTeleported then
+                paths.hasTeleported = true 
+                uiDisplay.TextColor3 = ALERT_COLOR 
+                print("ALERT: " .. configName .. " is at target time. Teleporting.")
+                teleportPlayer(destinationPart)
+            end
         else
-            uiDisplay.TextColor3 = DEFAULT_COLOR -- Keep text white otherwise
+            paths.hasTeleported = false
+            uiDisplay.TextColor3 = DEFAULT_COLOR
         end
     end
 
-    -- 4. Connect the check to the Text property change event and store the connection
-    local connection = timerLabel:GetPropertyChangedSignal("Text"):Connect(checkTimer)
-    CONFIG[configName].Connection = connection
+    -- Persistent monitoring loop
+    while true do
+        task.wait(0.5) -- Small wait to prevent crashing the thread
 
-    -- Also run once on startup, just in case the timer is already at a target value
-    checkTimer()
+        local shouldAttemptSetup = false
+
+        if paths.Connection and paths.TimerObject and paths.TimerObject.Parent then
+            -- Connection is active and object is valid. Wait longer before next check.
+            task.wait(2)
+            continue
+        else
+            -- Connection is broken or object is gone. Attempt setup.
+            shouldAttemptSetup = true
+        end
+
+        if shouldAttemptSetup then
+            print(string.format("[Monitor Reconnect] %s monitor connection lost/inactive. Attempting reconnection...", configName))
+            uiDisplay.Text = configName .. ": [Attempting Reconnect...]"
+            uiDisplay.TextColor3 = DEFAULT_COLOR
+
+            -- 1. Safely find the TimerLabel (source)
+            paths.TimerObject = safeFind(paths.TimerPathParts)
+            
+            if not paths.TimerObject or not paths.TimerObject:IsA("TextLabel") then
+                warn(string.format("[Reconnect Fail] Failed to find TextLabel for %s. Retrying in 5s.", configName))
+                uiDisplay.Text = configName .. " Timer: [ERROR - Path Failed, Retrying...]"
+                task.wait(5)
+                continue
+            end
+            
+            -- 2. Safely find the Destination Part (Only needs to happen once but checked here for robustness)
+            if not destinationPart or not destinationPart.Parent then
+                destinationPart = safeFind(paths.DestPathParts)
+                if not destinationPart or not destinationPart:IsA("BasePart") then
+                    warn(string.format("[Reconnect Fail] Failed to find Destination Part for %s. Retrying in 5s.", configName))
+                    uiDisplay.Text = configName .. " Timer: [ERROR - Destination Failed, Retrying...]"
+                    task.wait(5)
+                    continue
+                end
+            end
+            
+            -- If we reach here, we have both a valid TimerObject and DestinationPart
+            
+            -- 3. Disconnect any old connections (safety check)
+            if paths.Connection then
+                paths.Connection:Disconnect()
+            end
+
+            -- 4. Connect the check to the Text property change event and store the new connection
+            paths.Connection = paths.TimerObject:GetPropertyChangedSignal("Text"):Connect(checkTimer)
+            
+            print(string.format("[Monitor Active] Successfully reconnected monitor for %s.", configName))
+
+            -- Run once immediately to set the initial UI state
+            checkTimer(paths.TimerObject.Text)
+        end
+    end
 end
 
--- NEW STARTUP SEQUENCE: Start monitor tasks immediately. The 'safeFind' calls will handle the waiting.
-print("[Setup] Starting monitor tasks now (will wait for map parts)...")
+-- NEW STARTUP SEQUENCE: Start persistent monitor tasks.
+print("[Setup] Starting persistent monitor tasks...")
 
--- Run setup for all configured minigames
+-- Run persistent monitor for all configured minigames
 for name, paths in pairs(CONFIG) do
-    -- task.spawn ensures monitors run concurrently without blocking the main script loop
-    task.spawn(setupMinigameMonitor, name, paths) 
+    -- task.spawn ensures monitors run concurrently
+    task.spawn(startMonitorLoop, name, paths) 
 end
