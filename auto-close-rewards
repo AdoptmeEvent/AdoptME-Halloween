@@ -1,2 +1,67 @@
+-- This LocalScript should be placed in StarterPlayerScripts.
+-- It will create all UI elements and attach them to the player's screen when the game starts.
+
+local Players = game:GetService("Players")
+local localPlayer = Players.LocalPlayer
+
+-- Check if the player exists (it should, as this is a LocalScript)
+if not localPlayer then
+    warn("LocalPlayer not available.")
+    return
+end
+
+-- 1. Create the ScreenGui container
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ProgrammaticUI"
+screenGui.IgnoreGuiInset = true -- Ignore the top bar space
+screenGui.ResetOnSpawn = false -- Keep the UI visible upon player death
+
+-- 2. Create the TextButton
+local button = Instance.new("TextButton")
+button.Name = "ClickMeButton"
+button.Text = "Click Me! (Script-Generated)"
+button.TextScaled = true
+button.Font = Enum.Font.SourceSansBold
+
+-- Set visual properties for centering and sizing
+button.BackgroundColor3 = Color3.fromRGB(77, 77, 77) -- Initial color (Gray)
+button.TextColor3 = Color3.new(1, 1, 1) -- White text
+button.AnchorPoint = Vector2.new(0.5, 0.5)
+button.Position = UDim2.new(0.5, 0, 0.5, 0) -- Centered on the screen
+button.Size = UDim2.new(0.2, 0, 0.1, 0) -- 20% of screen width, 10% of screen height
+button.BorderSizePixel = 2
+button.Parent = screenGui -- Place the button inside the ScreenGui
+
+-- 3. Implement the Click Logic (same logic as before)
+local clickCount = 0
+local originalColor = button.BackgroundColor3
+
+local function onButtonClicked()
+    clickCount = clickCount + 1
+    
+    -- Print a message to the client's output log
+    print("The programmatic button was clicked! Total clicks: " .. clickCount)
+    
+    -- Update the button's displayed text
+    button.Text = "Clicked " .. clickCount .. " times!"
+    
+    -- Cycle colors for visual feedback
+    if clickCount % 2 == 1 then
+        -- Greenish shade
+        button.BackgroundColor3 = Color3.new(0.33, 0.8, 0.5) 
+    else
+        -- Reddish shade
+        button.BackgroundColor3 = Color3.new(0.8, 0.5, 0.5) 
+    end
+end
+
+-- Connect the function to the MouseButton1Click event
+button.MouseButton1Click:Connect(onButtonClicked)
+
+-- 4. Attach the UI to the player's screen
+-- WaitForChild is used to ensure the PlayerGui exists when we try to parent the ScreenGui
+screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+print("Programmatic UI successfully created and attached to PlayerGui.")
 
 print("hello world!")
