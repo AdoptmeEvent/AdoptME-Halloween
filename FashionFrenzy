@@ -1,13 +1,15 @@
 -- This script runs continuously, searching for the game map. When the map is found,
 -- it executes a sequence of teleports and clicks. The sequence is instantly halted 
--- if the in-game timer reaches "00:40" or "00:50", immediately resetting the script
+-- if the in-game timer reaches "00:10" or "00:20", immediately resetting the script
 -- to search for the next game round.
 
 -- Configuration
-local TELEPORT_DELAY = 0.4 -- Time in seconds to wait at each physical target (reduced for lag)
+local TELEPORT_DELAY = 0.15 -- Time in seconds to wait at each physical target (reduced for speed)
 local SEARCH_WAIT_TIME = 2.0 -- Time in seconds to wait between search attempts
-local TIMER_STOP_VALUES = {"00:40", "00:50"} -- Values that trigger a sequence stop
-local TIMER_START_THRESHOLD = "00:50" -- If the timer is <= this value when starting, abort the sequence
+local TIMER_STOP_VALUES = {"00:10", "00:20"} -- Values that trigger a sequence stop (UPDATED per request)
+local TIMER_START_THRESHOLD = "00:30" -- If the timer is <= this value when starting, abort the sequence (Adjusted for shorter cycles)
+local PAW_VISIT_FREQUENCY = 5 -- Run the Pet Paw cycle once every N cycles (Prioritize Mannequins)
+local MANNEQUIN_TEST_TIME = 5.0 -- Time in seconds to wait at each mannequin for testing (Reduced for speed)
 
 -- Services and Player Setup
 local Players = game:GetService("Players")
@@ -21,6 +23,9 @@ local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 -- Global Control Flags
 local IsSequenceActive = false -- Is the teleport/click sequence currently running?
 local ShouldStop = false       -- Has the timer triggered a stop signal?
+
+-- State for prioritization across game rounds
+local cycleCount = 0
 
 -- Define the path components up to the MINIGAME container
 local MINIGAME_CONTAINER_COMPONENTS = {
@@ -51,6 +56,18 @@ local function getCurrentTimerText()
         return valueLabel.Text
     end
     return nil
+end
+
+-- Function to safely wait for a duration while checking the global stop flag
+local function waitWithStopCheck(duration)
+    local checkInterval = 1 -- Check every 1 second
+    local remaining = duration
+    
+    while remaining > 0 and not ShouldStop do
+        local waitTime = math.min(checkInterval, remaining)
+        task.wait(waitTime)
+        remaining = remaining - checkInterval
+    end
 end
 
 local function timerMonitor()
@@ -88,69 +105,173 @@ local function clickButton(button)
     if not button or not getconnections then
         return
     end
+    
+    -- Crucial check to ensure the button is visible and active before trying to click
+    if button:IsA("GuiObject") and (button.Visible == false or button.Active == false) then
+        warn(string.format("Button %s is not Visible or Active. Skipping click attempts.", button.Name))
+        return
+    end
 
-    -- print("Button found! Attempting to click:", button.Name) -- Commented out to reduce console spam
+    print("Attempting to click:", button.Name, "(Type:", button.ClassName, ")")
+    
+    -- 1. MOST RELIABLE: Use FireClick/FireTouchTap if available (these execute the full click logic)
+    if button.ClassName == "TextButton" or button.ClassName == "ImageButton" then
+        -- This is often the most effective way to trigger a click if it's enabled by the exploit
+        pcall(function() button:FireClick() end) 
+        pcall(function() button:FireTouchTap() end)
+    end
 
-    -- MouseButton1Down
+    -- 2. Fallback: Fire Mouse Events (Standard GUI click)
     for _, connection in pairs(getconnections(button.MouseButton1Down)) do
         connection:Fire()
     end
-    task.wait(0.1)
-
-    -- MouseButton1Click
+    
     for _, connection in pairs(getconnections(button.MouseButton1Click)) do
         connection:Fire()
     end
-    task.wait(0.1)
-
-    -- MouseButton1Up
+    
     for _, connection in pairs(getconnections(button.MouseButton1Up)) do
         connection:Fire()
     end
-    -- print("Successfully clicked the button!") -- Commented out to reduce console spam
+
+    -- 3. Fallback: Fire Touch/Tap Events
+    if button.TouchTap then
+        for _, connection in pairs(getconnections(button.TouchTap)) do
+            connection:Fire()
+        end
+    end
+    
+    -- 4. Low-Level Global Mouse Input Simulation
+    if button:IsA("GuiObject") then
+        local x = button.AbsolutePosition.X + button.AbsoluteSize.X / 2
+        local y = button.AbsolutePosition.Y + button.AbsoluteSize.Y / 2
+
+        -- Mouse movement to the button's center
+        pcall(function() mousemoveabs(x, y) end)
+        pcall(function() mousemoverel(0, 0) end)
+        
+        -- Left Mouse Button (Mouse1) Actions
+        pcall(mouse1click)
+        pcall(mouse1press)
+        pcall(mouse1release)
+        
+        -- Right Mouse Button (Mouse2) Actions
+        pcall(mouse2click)
+        pcall(mouse2press)
+        pcall(mouse2release)
+        
+        -- Mouse Scroll (usually irrelevant for a click, but included as requested)
+        pcall(function() mousescroll(0) end)
+    end
+
+    -- EXPLICIT CLICK CONFIRMATION
+    print("Successfully fired events for:", button.Name)
 end
 
--- Clicks a pet button in BackpackApp
+-- NEW: Helper function to open the main Inventory/Backpack UI before finding the pet
+local function openMainInventory()
+    if ShouldStop then return end
+    -- Common names for the main backpack button in the PlayerGui
+    local button = LocalPlayer.PlayerGui:FindFirstChild("InventoryButton", true) 
+    if not button then
+        button = LocalPlayer.PlayerGui:FindFirstChild("BackpackButton", true)
+    end
+    
+    if button and button:IsA("GuiObject") then
+        print("Explicitly clicking the main Inventory/Backpack UI button.")
+        clickButton(button)
+        -- Give UI a moment to start loading the BackpackApp
+        task.wait(0.2) 
+    else
+        warn("Could not find the main Backpack/Inventory UI button. Skipping explicit open.")
+    end
+end
+
+-- UPDATED: Clicks a pet button in BackpackApp using a more robust search and **WAITING for the GUI to load**
 local function findAndClickPetButton()
     if ShouldStop then return end
 
     local gui = LocalPlayer.PlayerGui
+    local BackpackApp = nil
+    local waitTimeout = 2 -- Wait up to 2 seconds for the UI to appear
+    local startTime = tick()
 
-    -- Traverse the path: BackpackApp.Frame.Body.ScrollComplex.ScrollingFrame.Content
-    local content = gui:FindFirstChild("BackpackApp")
-        and gui.BackpackApp:FindFirstChild("Frame")
-        and gui.BackpackApp.Frame:FindFirstChild("Body")
-        and gui.BackpackApp.Frame.Body:FindFirstChild("ScrollComplex")
-        and gui.BackpackApp.Frame.Body.ScrollComplex:FindFirstChild("ScrollingFrame")
-        and gui.BackpackApp.Frame.Body.ScrollComplex.ScrollingFrame:FindFirstChild("Content")
+    -- 1. WAIT for the main BackpackApp GUI to appear after clicking the inventory button
+    repeat
+        BackpackApp = gui:FindFirstChild("BackpackApp")
+        if not BackpackApp then
+            task.wait(0.1)
+        end
+    until BackpackApp or ShouldStop or (tick() - startTime > waitTimeout)
+
+    if not BackpackApp then
+        warn("BackpackApp GUI failed to open or load within timeout. Skipping pet selection.")
+        return
+    end
+    
+    -- 2. Traverse the path using the found BackpackApp
+    local content = BackpackApp:FindFirstChild("Frame")
+        and BackpackApp.Frame:FindFirstChild("Body")
+        and BackpackApp.Frame.Body:FindFirstChild("ScrollComplex")
+        and BackpackApp.Frame.Body.ScrollComplex:FindFirstChild("ScrollingFrame")
+        and BackpackApp.Frame.Body.ScrollComplex.ScrollingFrame:FindFirstChild("Content")
 
     if not content then
-        warn("Pet content container not found in BackpackApp.")
+        warn("Pet content container not fully loaded in BackpackApp structure.")
         return
     end
     
     local pets = content:FindFirstChild("pets")
     if not pets then warn("'pets' container not found under Content."); return end
 
-    local targetRow = pets:FindFirstChild("Row0")
-    if not targetRow then warn("Pet row 'Row0' not found."); return end
-
-    for _, itemFrame in ipairs(targetRow:GetChildren()) do
-        if ShouldStop then return end -- Check inside the loop
-
-        if itemFrame.Name:lower():match("add_more_pets") then 
-            continue
-        end
-
-        local buttonToClick = itemFrame:FindFirstChild("Button", true)
+    print("Searching for a usable pet button within the 'pets' container (robust search)...")
+    
+    local foundPetButton = false
+    
+    -- Iterate through all children of 'pets' (which should be the rows or direct pet containers)
+    for _, rowOrContainer in ipairs(pets:GetChildren()) do
+        if ShouldStop then break end
         
+        -- Priority 1: Check if the container itself holds the button (e.g., direct item frame)
+        local buttonToClick = rowOrContainer:FindFirstChild("Button", true) or rowOrContainer:FindFirstChild("TapButton", true)
+
         if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
+            if rowOrContainer.Name:lower():match("add_more_pets") then 
+                 continue -- Skip the "Add More Pets" button
+            end
+
+            print(string.format("Found and clicking pet button in top-level container: %s", rowOrContainer.Name))
             clickButton(buttonToClick)
-            return -- Clicked the first available pet button and exit
+            foundPetButton = true
+            break
+        else
+            -- Priority 2: Iterate through children of the row/container (the individual pet item frames)
+            for _, itemFrame in ipairs(rowOrContainer:GetChildren()) do
+                if ShouldStop then break end
+                
+                if itemFrame.Name:lower():match("add_more_pets") then 
+                    continue
+                end
+
+                local itemButton = itemFrame:FindFirstChild("Button", true) or itemFrame:FindFirstChild("TapButton", true)
+                
+                if itemButton and (itemButton:IsA("TextButton") or itemButton:IsA("ImageButton")) then
+                    print(string.format("Found and clicking nested pet button in: %s -> %s", rowOrContainer.Name, itemFrame.Name))
+                    clickButton(itemButton)
+                    foundPetButton = true
+                    break -- Found and clicked, exit inner loop
+                end
+            end
         end
+
+        if foundPetButton then break end -- Exit outer loop
     end
-    warn("No usable pet button found inside the first pet row.")
+
+    if not foundPetButton then
+        warn("No usable pet button found inside the 'pets' container after deep search.")
+    end
 end
+
 
 -- Clicks the Backpack Exit button
 local function closeBackpack()
@@ -187,15 +308,18 @@ local function clickAllBasicSelects()
         if ShouldStop then return end -- Check inside the loop
         
         if templateFrame:IsA("GuiObject") then
-            local buttonToClick = templateFrame:FindFirstChild("TapButton")
+            -- Use the recursive FindFirstChild(name, true) to search deeply
+            -- inside the templateFrame for the TapButton, handling nested frames.
+            local buttonToClick = templateFrame:FindFirstChild("TapButton", true) 
 
             if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
                 clickButton(buttonToClick)
                 clickCount = clickCount + 1
+                -- Clicks are instantaneous for max aggressiveness
             end
         end
     end
-    -- print(string.format("Clicked %d buttons in BasicSelects.", clickCount)) -- Commented out to reduce console spam
+    print(string.format("Clicked %d BasicSelect buttons.", clickCount))
 end
 
 --------------------------------------------------------------------------------
@@ -209,6 +333,34 @@ local function findChildByPrefix(parent, prefix)
             return child
         end
     end
+    return nil
+end
+
+-- Function to find the best physical part to teleport to within a model.
+-- This prioritizes a specific part name (like HRP, Paw, or Head) but falls back to any BasePart.
+local function findBestPartToTeleportTo(model, primaryName)
+    -- 1. Check for the primary part (e.g., Head, Paw) recursively
+    local primaryPart = model:FindFirstChild(primaryName, true)
+    if primaryPart and primaryPart:IsA("BasePart") then
+        return primaryPart
+    end
+
+    -- 2. Check if the model itself is a part
+    if model:IsA("BasePart") then
+        return model
+    end
+
+    -- 3. Fallback: Find the first BasePart (or MeshPart, Part, etc.) recursively
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            -- Ensure we don't accidentally fall back to HumanoidRootPart if it exists and wasn't the primary search
+            if primaryName ~= "HumanoidRootPart" and descendant.Name == "HumanoidRootPart" then
+                continue 
+            end
+            return descendant
+        end
+    end
+
     return nil
 end
 
@@ -238,21 +390,38 @@ local function TeleportTo(position)
     marker:Destroy()
 end
 
--- Function to find the position of the first available Paw part
+-- Function to find the position of the first available Paw part (now uses robust finding)
 local function findFirstPawPosition(minigameContainer)
     local petPodiumsContainer = minigameContainer:FindFirstChild("PetPodiums")
     if not petPodiumsContainer then return nil end
 
     for _, podiumModel in ipairs(petPodiumsContainer:GetChildren()) do
-        local part1 = podiumModel:FindFirstChild("1")
-        local targetPaw = part1 and part1:FindFirstChild("Paw")
+        -- Use the robust search on the podium model, prioritizing "Paw"
+        local targetPart = findBestPartToTeleportTo(podiumModel, "Paw")
 
-        if targetPaw and targetPaw:IsA("BasePart") then
-            return targetPaw.Position
+        if targetPart then
+            return targetPart.Position
         end
     end
     return nil
 end
+
+-- NEW: Function to find the position of the first Mannequin (used for fallback teleport)
+local function findFirstMannequinPosition(minigameContainer)
+    local mannequinsContainer = minigameContainer:FindFirstChild("AccessoryMannequins")
+    if not mannequinsContainer then return nil end
+
+    for _, mannequinModel in ipairs(mannequinsContainer:GetChildren()) do
+        -- Prioritize "Head" as the teleport target
+        local targetPart = findBestPartToTeleportTo(mannequinModel, "Head")
+        
+        if targetPart then
+            return targetPart.Position
+        end
+    end
+    return nil
+end
+
 
 --------------------------------------------------------------------------------
 -- TELEPORT SEQUENCE FUNCTIONS
@@ -260,7 +429,7 @@ end
 
 -- Function to handle Mannequin teleportation and accessory equip cycle
 local function teleportToMannequins(minigameContainer, returnPosition)
-    print("--- STARTING MANNEQUIN TELEPORT & ACCESSORY CYCLE ---")
+    print("--- STARTING MANNEQUIN TELEPORT & ACCESSORY CYCLE (HIGH PRIORITY) ---")
     local mannequinsContainer = minigameContainer:FindFirstChild("AccessoryMannequins")
 
     if not mannequinsContainer or ShouldStop then warn("Mannequin container not found or sequence stopped."); return end
@@ -270,32 +439,51 @@ local function teleportToMannequins(minigameContainer, returnPosition)
         if ShouldStop then return end -- Stop check
         
         targetsFound = targetsFound + 1
-        local targetHRP = mannequinModel:FindFirstChild("HumanoidRootPart")
+        -- UPDATED: Prioritize "Head" as the teleport target instead of HumanoidRootPart.
+        local targetPart = findBestPartToTeleportTo(mannequinModel, "Head") 
 
-        if targetHRP and targetHRP:IsA("BasePart") then
-            print(string.format("[MANNEQUIN %d] Teleporting to Mannequin: %s", targetsFound, mannequinModel.Name))
+        if targetPart then
+            print(string.format("[MANNEQUIN %d] Teleporting to Mannequin: %s (Target: %s)", targetsFound, mannequinModel.Name, targetPart.Name))
             
-            -- 1. Teleport to Mannequin HRP
-            TeleportTo(targetHRP.Position)
+            -- 1. Teleport to Mannequin HRP/Part
+            TeleportTo(targetPart.Position)
             
             -- 2. Click all buttons in BasicSelects (Accessory Selection)
             clickAllBasicSelects() 
             if ShouldStop then return end
             
-            -- 3. Teleport back to Paw position to finalize accessory selection
+            -- 3. Wait 5 seconds (safe wait with timer check)
+            print(string.format("[MANNEQUIN %d] Waiting %d seconds for accessory testing...", targetsFound, MANNEQUIN_TEST_TIME))
+            waitWithStopCheck(MANNEQUIN_TEST_TIME)
+            if ShouldStop then return end
+            
+            -- 4. Teleport back to Paw position to finalize accessory selection
             if returnPosition then
+                print(string.format("[MANNEQUIN %d] Confirmation Step: Teleporting back to return position for finalize click.", targetsFound))
+                
                 TeleportTo(returnPosition) 
                 if ShouldStop then return end
                 
-                -- 4. Click all buttons in BasicSelects again (Confirmation/Put On)
-                clickAllBasicSelects() 
+                -- ADDED STABILIZATION DELAY to allow the UI to refresh/re-activate
+                task.wait(0.2) 
+                
+                -- 5. Click all buttons in BasicSelects again (Confirmation/Put On) with RETRY
+                print(string.format("[MANNEQUIN %d] Confirmation Step: Clicking BasicSelects again (3 attempts) to confirm accessory.", targetsFound))
+                
+                -- *** ADDED RETRY LOOP HERE ***
+                for attempt = 1, 3 do
+                    clickAllBasicSelects() 
+                    task.wait(0.1) -- Short wait between retries
+                end
+                
                 if ShouldStop then return end
             else
-                warn("Return position (Paw) not provided. Cannot finalize accessory selection cycle.")
+                -- Log a specific warning about the skipped steps
+                warn(string.format("[MANNEQUIN %d] Return position (Paw/Fallback) was nil. Skipping accessory confirmation clicks (Steps 4 & 5).", targetsFound))
             end
             
         else
-            warn(string.format("Mannequin %s does not have a HumanoidRootPart. Skipping.", mannequinModel.Name))
+            warn(string.format("Mannequin %s does not have a suitable part (Head or BasePart) for teleporting. Skipping.", mannequinModel.Name))
         end
     end
     
@@ -306,7 +494,7 @@ end
 
 -- Function to handle Pet Paw teleportation and pet selection cycle
 local function teleportToPetPaws(minigameContainer)
-    print("--- STARTING PET PODIUM PAW TELEPORT & PET SELECTION CYCLE ---")
+    print("--- STARTING PET PODIUM PAW TELEPORT & PET SELECTION CYCLE (LOW PRIORITY) ---")
     local petPodiumsContainer = minigameContainer:FindFirstChild("PetPodiums")
 
     if not petPodiumsContainer or ShouldStop then warn("PetPodiums container not found or sequence stopped."); return end
@@ -316,14 +504,14 @@ local function teleportToPetPaws(minigameContainer)
         if ShouldStop then return end -- Stop check
         
         targetsFound = targetsFound + 1
-        local part1 = podiumModel:FindFirstChild("1")
-        local targetPaw = part1 and part1:FindFirstChild("Paw")
+        -- Use the robust function to find the best part for teleportation, prioritizing "Paw"
+        local targetPart = findBestPartToTeleportTo(podiumModel, "Paw")
 
-        if targetPaw and targetPaw:IsA("BasePart") then
-            print(string.format("[PAW %d] Teleporting to Paw: %s", targetsFound, podiumModel.Name))
+        if targetPart then
+            print(string.format("[PAW %d] Teleporting to Paw: %s (Target: %s)", targetsFound, podiumModel.Name, targetPart.Name))
             
             -- 1. Teleport to Paw
-            TeleportTo(targetPaw.Position)
+            TeleportTo(targetPart.Position)
             if ShouldStop then return end
             
             -- 2. Click pet button in GUI to select a pet
@@ -334,12 +522,12 @@ local function teleportToPetPaws(minigameContainer)
             closeBackpack()
             if ShouldStop then return end
         else
-            warn(string.format("Podium %s does not have a valid Paw part. Skipping.", podiumModel.Name))
+            warn(string.format("Podium %s does not have a suitable part (Paw or BasePart) for teleporting. Skipping.", podiumModel.Name))
         end
     end
     
     if not ShouldStop then
-        print(string.format("--- Pet Paw Cycle Finished. Visited %d Paw locations. ---", targetsFound))
+        print("--- Pet Paw Cycle Finished. ---")
     end
 end
 
@@ -347,38 +535,99 @@ end
 local function runFullSequence(minigameContainer)
     local initialTime = getCurrentTimerText()
     
-    -- PRE-SEQUENCE TIMER CHECK: If the time is too low (e.g., 00:50 or lower), abort the start.
+    -- PRE-SEQUENCE TIMER CHECK: If the time is too low (e.g., 00:30 or lower), abort the start.
     if initialTime and (initialTime <= TIMER_START_THRESHOLD) then
         print(string.format("!! Initial timer check failed: %s is <= %s. Round is too late. Resetting search.", initialTime, TIMER_START_THRESHOLD))
         return
     end
 
+    -- Increment the cycle count for this attempt
+    cycleCount = cycleCount + 1
+    local isPawCycle = (cycleCount % PAW_VISIT_FREQUENCY == 0)
+
+    print(string.format("--- Starting Full Sequence (Cycle #%d). Paw Cycle: %s ---", cycleCount, isPawCycle and "YES" or "NO"))
+
     IsSequenceActive = true
     
-    -- Initial Teleport to the first Paw and store its position
-    local initialPawPosition = findFirstPawPosition(minigameContainer)
+    -- 1. Determine the Paw position (This is the critical return point for accessory confirmation).
+    local pawPosition = findFirstPawPosition(minigameContainer)
+    local returnPositionForMannequins = pawPosition -- Use pawPosition as the primary return point
 
-    if initialPawPosition and not ShouldStop then
-        print("--- Initial Teleport: Moving to the first Pet Paw location. ---")
-        TeleportTo(initialPawPosition)
-    elseif not ShouldStop then
-        warn("Could not find an initial Pet Paw target. Starting full sequence immediately.")
-    end
-
-    -- Delay before starting the full sequence
-    if not ShouldStop then
-        task.wait(TELEPORT_DELAY * 2) -- A slightly longer initial wait
-    end
-
-    -- Execute both FULL teleport sequences in order
-    if not ShouldStop then
-        teleportToMannequins(minigameContainer, initialPawPosition) 
+    -- FALLBACK check: If Paw is missing, find a Mannequin to use for the initial setup teleport.
+    if not pawPosition then
+        -- If Paw is missing, we use the first Mannequin as the initial equip point.
+        local firstMannequinPosition = findFirstMannequinPosition(minigameContainer)
+        
+        if firstMannequinPosition then
+            print("!! WARNING: Paw position not found. Initial setup will be performed at the first Mannequin.")
+            -- Temporarily set pawPosition to the mannequin for the initial setup block to run.
+            pawPosition = firstMannequinPosition 
+        else
+            warn("!! CRITICAL: Neither Paw nor Mannequin found. Skipping initial setup.")
+        end
     end
     
+    -- ----------------------------------------------------
+    -- INITIAL SETUP SEQUENCE
+    -- ----------------------------------------------------
+    if pawPosition and not ShouldStop then
+        print("--- START OF ROUND SETUP: Teleporting for initial equips. ---")
+        
+        -- 1. Teleport to Paw (or Mannequin fallback)
+        TeleportTo(pawPosition)
+        if ShouldStop then return end
+        
+        -- 2. Click all BasicSelects buttons (initial accessory equip)
+        print("--- SETUP: Clicking all BasicSelects buttons once. ---")
+        clickAllBasicSelects() 
+        if ShouldStop then return end
+        
+        -- 3. Open the Backpack and then select the first pet
+        print("--- SETUP: Explicitly opening backpack, selecting first pet (robust), and closing. ---")
+        
+        -- NEW: Ensure the main inventory button is clicked first (if it exists)
+        openMainInventory() 
+        if ShouldStop then return end
+        
+        -- Select the pet from the now-open BackpackApp (This function now includes the wait)
+        findAndClickPetButton()
+        if ShouldStop then return end
+        
+        -- Close the BackpackApp
+        closeBackpack()
+        if ShouldStop then return end
+        
+        print("--- SETUP COMPLETE. Starting Mannequin cycles. ---")
+    else
+        warn("!! CRITICAL: Paw position not found, and initial setup was skipped.")
+    end
+    
+    -- Delay before starting the timed cycles
     if not ShouldStop then
+        task.wait(TELEPORT_DELAY) -- Shortened wait time for speed
+    end
+    -- ----------------------------------------------------
+    -- END NEW INITIAL SETUP SEQUENCE
+    -- ----------------------------------------------------
+    
+    -- 2. ALWAYS execute Mannequin sequence (Highest Priority)
+    if not ShouldStop then
+        -- This variable holds the position for the return teleport
+        teleportToMannequins(minigameContainer, returnPositionForMannequins) 
+    end
+    
+    -- 3. Execute Pet Paw sequence only "once in a while"
+    if not ShouldStop and isPawCycle then
         teleportToPetPaws(minigameContainer)
+    elseif not isPawCycle then
+        print(string.format("--- Skipping Pet Paw Cycle (Next cycle at #%d). ---", PAW_VISIT_FREQUENCY - (cycleCount % PAW_VISIT_FREQUENCY) + cycleCount))
     end
-    
+
+    -- Reset the count after a successful Paw visit to ensure the next one is 5 cycles later
+    if isPawCycle and not ShouldStop then
+        cycleCount = 0 
+    end
+
     -- Final status update
     if not ShouldStop then
         print("--- FULL SEQUENCE COMPLETE. Waiting for timer reset to continue loop. ---")
