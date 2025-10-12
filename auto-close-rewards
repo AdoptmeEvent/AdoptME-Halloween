@@ -16,7 +16,7 @@ screenGui.Name = "ProgrammaticUI"
 screenGui.IgnoreGuiInset = true -- Ignore the top bar space
 screenGui.ResetOnSpawn = false -- Keep the UI visible upon player death
 
--- 2. Create the TextButton
+-- 2. Create the Main TextButton (Click Counter)
 local button = Instance.new("TextButton")
 button.Name = "ClickMeButton"
 button.Text = "Click Me! (Script-Generated)"
@@ -30,9 +30,23 @@ button.AnchorPoint = Vector2.new(0.5, 0.5)
 button.Position = UDim2.new(0.5, 0, 0.5, 0) -- Centered on the screen
 button.Size = UDim2.new(0.2, 0, 0.1, 0) -- 20% of screen width, 10% of screen height
 button.BorderSizePixel = 2
-button.Parent = screenGui -- Place the button inside the ScreenGui
+button.Parent = screenGui -- Place the main button inside the ScreenGui
 
--- 3. Implement the Click Logic (same logic as before)
+-- 2b. Create the Close Button (X)
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.Text = "X"
+closeButton.TextScaled = true
+closeButton.Font = Enum.Font.SourceSansBold
+closeButton.TextColor3 = Color3.new(1, 1, 1) -- White text
+closeButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50) -- Red color for visibility
+closeButton.AnchorPoint = Vector2.new(1, 0) -- Anchor to the top-right corner
+closeButton.Position = UDim2.new(1, -10, 0, 10) -- 10 pixels from the top and right edges
+closeButton.Size = UDim2.new(0, 40, 0, 40) -- Fixed 40x40 pixel size
+closeButton.BorderSizePixel = 0
+closeButton.Parent = screenGui -- Place the close button inside the ScreenGui
+
+-- 3. Implement the Click Logic
 local clickCount = 0
 local originalColor = button.BackgroundColor3
 
@@ -55,13 +69,19 @@ local function onButtonClicked()
     end
 end
 
--- Connect the function to the MouseButton1Click event
+-- 3b. Implement the Close Logic
+local function onCloseButtonClicked()
+    print("Close button clicked. Destroying UI...")
+    -- Destroying the ScreenGui removes it and all its children from the PlayerGui.
+    screenGui:Destroy()
+end
+
+-- Connect the functions to their respective buttons
 button.MouseButton1Click:Connect(onButtonClicked)
+closeButton.MouseButton1Click:Connect(onCloseButtonClicked)
 
 -- 4. Attach the UI to the player's screen
 -- WaitForChild is used to ensure the PlayerGui exists when we try to parent the ScreenGui
 screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 
 print("Programmatic UI successfully created and attached to PlayerGui.")
-
-print("hello world!")
