@@ -386,13 +386,13 @@ local MAX_CLICK_RETRIES = 5 -- **CRITICAL: Max retries for Inventory, Close, and
 local PET_CLICK_RETRIES = 5 -- **CRITICAL: Max retries specifically for individual pet buttons.**
 
 -- The status message configuration
-local VERSION_TEXT = "V4.6 Paw Wait/Row0 Targeting/No Close - FIX" -- Updated version text
+local VERSION_TEXT = "V4.7 Continuous Row0 Pet Click Loop" -- Updated version text
 local STATUS_DURATION = 5.0
 local STATUS_COLOR = Color3.fromRGB(255, 0, 0) -- Bright Red for high visibility
 local RESTORE_COLOR = Color3.fromRGB(255, 255, 255) -- White (Used if original color can't be stored)
 
 -- NEW: Default status for the Pet Mode section (Updated for clarity)
-local PET_MODE_DEFAULT_STATUS = "[Pet Mode] Disabled (OFF) or Awaiting new round (ON)."
+local PET_MODE_DEFAULT_STATUS = "[Pet Mode] Disabled (OFF) or Idle (Waiting to activate)."
 local PET_MODE_DEFAULT_COLOR = Color3.new(0.8, 0.8, 0.8) -- Light Gray for default text
 
 -- Services and Player Setup
@@ -478,7 +478,7 @@ end
 local function updatePetClickToggleButton()
     if petClickToggleButton then
         if IS_AUTO_PET_CLICK_ACTIVE then
-            petClickToggleButton.Text = "Auto Pet Click: ON"
+            petClickToggleButton.Text = "Auto Pet Click: ON (Continuous Row0)"
             petClickToggleButton.BackgroundColor3 = Color3.fromRGB(0, 128, 255) -- Blue
             petClickToggleButton.TextColor3 = Color3.new(1, 1, 1)
         else
@@ -603,7 +603,7 @@ local function createFullUI()
     petClickToggleButton.Size = UDim2.new(1, -10, 0, 40) -- Full width minus padding
     petClickToggleButton.Position = UDim2.new(0, 5, 0, 115) -- 80 (Pet Status Start) + 30 (Pet Status Height) + 5 (Padding) = 115
     petClickToggleButton.BackgroundColor3 = Color3.fromRGB(0, 128, 255) -- Blue
-    petClickToggleButton.Text = "Auto Pet Click: ON"
+    petClickToggleButton.Text = "Auto Pet Click: ON (Continuous Row0)"
     petClickToggleButton.TextColor3 = Color3.new(1, 1, 1)
     petClickToggleButton.Font = Enum.Font.SourceSansBold
     petClickToggleButton.TextSize = 18
@@ -667,7 +667,7 @@ local function getCurrentTimerText()
         return valueLabel.Text
     end
     return nil
-end -- FIXED: Replaced '}' with 'end' to correctly close the function.
+end
 
 -- Function to safely wait for a duration while checking the global stop flag
 local function waitWithStopCheck(duration)
@@ -714,7 +714,7 @@ displayVersionStatus()
 -- GUI INTERACTION FUNCTIONS (Integrated Click Logic)
 --------------------------------------------------------------------------------
 
--- NEW: Function to calculate the absolute center position of a GuiObject
+-- Function to calculate the absolute center position of a GuiObject
 local function getGuiCenter(guiObject)
     local absPos = guiObject.AbsolutePosition
     local absSize = guiObject.AbsoluteSize
@@ -729,13 +729,12 @@ end
 
 -- Function to simulate click events using event firing OR positional click as a fallback.
 local function clickButton(button, retries)
-    if ShouldStop or not IS_SCRIPT_ACTIVE then return end -- Check before clicking
-
-    retries = retries or 1 -- Default to 1 attempt if not specified
-
+    -- Note: This function is used by the continuous loop as well, which manages its own IS_SCRIPT_ACTIVE checks
     if not button or not getconnections then
         return false -- Indicate failure if the button is invalid or getconnections is missing
     end
+
+    retries = retries or 1 -- Default to 1 attempt if not specified
 
     local success = false
     local attempts = 0
@@ -743,13 +742,12 @@ local function clickButton(button, retries)
     -- Retry loop for click robustness
     for attempt = 1, retries do
         attempts = attempt
-        local positionalClickAttempted = false
         
         -- 1. Attempt to simulate MouseButton1Down
         for _, connection in pairs(getconnections(button.MouseButton1Down)) do
             connection:Fire()
         end
-        task.wait(0.1) -- Time sequence delay
+        task.wait(0.1) 
 
         -- 2. Attempt to simulate MouseButton1Click (The most important one)
         local clickConnections = getconnections(button.MouseButton1Click)
@@ -763,10 +761,10 @@ local function clickButton(button, retries)
             for _, connection in pairs(getconnections(button.MouseButton1Up)) do
                 connection:Fire()
             end
-            success = true -- Set success and continue to the delay
+            success = true 
         end
 
-        task.wait(0.1) -- Time sequence delay
+        task.wait(0.1) 
 
         -- 3. Attempt to simulate MouseButton1Up (if not already done above)
         for _, connection in pairs(getconnections(button.MouseButton1Up)) do
@@ -774,17 +772,16 @@ local function clickButton(button, retries)
         end
         
         if success then 
-            print(string.format("SUCCESS: Event firing for: %s (Attempt: %d/%d)", button.Name, attempts, retries))
+            -- print(string.format("SUCCESS: Event firing for: %s (Attempt: %d/%d)", button.Name, attempts, retries)) -- Too chatty
             break -- Exit the retry loop on success
         end
         
         -- 4. FALLBACK: Positional Click (If event firing failed on the first try, or if a more aggressive click is needed)
-        -- We run this as a final attempt in the retry loop, only if the primary event firing failed.
         if not success and type(setcursorpos) == "function" and type(mouse1click) == "function" then
             local x, y = getGuiCenter(button)
             local floorX, floorY = math.floor(x), math.floor(y)
 
-            print(string.format("FAIL: Event firing failed. Falling back to Positional Click at X=%d, Y=%d (Attempt: %d/%d)", floorX, floorY, attempts, retries))
+            -- print(string.format("FAIL: Event firing failed. Falling back to Positional Click at X=%d, Y=%d (Attempt: %d/%d)", floorX, floorY, attempts, retries)) -- Too chatty
             
             -- Move cursor and click
             setcursorpos(floorX, floorY)
@@ -793,10 +790,9 @@ local function clickButton(button, retries)
             
             success = true -- Assume success if positional click was executed
             
-            -- Short delay after positional click before breaking/continuing
             task.wait(0.1) 
             
-            print(string.format("SUCCESS: Positional click executed for: %s (Attempt: %d/%d)", button.Name, attempts, retries))
+            -- print(string.format("SUCCESS: Positional click executed for: %s (Attempt: %d/%d)", button.Name, attempts, retries)) -- Too chatty
             break -- Exit the retry loop on success
         end
 
@@ -817,15 +813,10 @@ local function checkBackpackVisibility()
     local backpackApp = gui:FindFirstChild("BackpackApp")
     
     local isVisible = backpackApp and backpackApp:IsA("ScreenGui") and backpackApp.Enabled
-
-    -- FIX: Convert boolean to string for string.format
-    local statusText = tostring(isVisible) 
-    print(string.format("BackpackApp existence/enabled check: %s", statusText))
-    
     return isVisible
 end
 
--- NEW: Safely finds the primary inventory/backpack button using recursive search.
+-- Safely finds the primary inventory/backpack button using recursive search.
 local function findInventoryButton()
     local gui = LocalPlayer.PlayerGui
     -- List of common button names, searching recursively through the PlayerGui
@@ -843,25 +834,20 @@ end
 
 -- Function to safely open the main Inventory/Backpack UI (NOW WITH 5x RETRIES)
 local function openMainInventory()
-    if ShouldStop or not IS_SCRIPT_ACTIVE then return end
+    -- NOTE: This function does *not* check for ShouldStop as it's used by the continuous loop
     
     -- 1. CHECK: Is the BackpackApp GUI already open/enabled?
     if checkBackpackVisibility() then
-        print("BackpackApp is already enabled/open. Skipping inventory button click.")
-        -- Persistent status with TRUE state
-        updatePetStatus("Backpack: true (Already Open).", 0)
-        task.wait(0.5)
+        -- print("BackpackApp is already enabled/open. Skipping inventory button click.") -- Too chatty
         return
     end
 
     -- 2. SEARCH: Find the button needed to open the GUI
-    updatePetStatus("Backpack: false (Searching for open button...)", 0)
     local button = findInventoryButton()
 
     -- 3. ACT: Click the button if found with MAX_CLICK_RETRIES
     if button then
-        print(string.format("Explicitly clicking the main Inventory/Backpack UI button: %s (Max Retries: %d)", button.Name, MAX_CLICK_RETRIES))
-        updatePetStatus("Backpack: false (Clicking open now...)", 0)
+        -- print(string.format("Explicitly clicking the main Inventory/Backpack UI button: %s (Max Retries: %d)", button.Name, MAX_CLICK_RETRIES)) -- Too chatty
 
         local success = false
         for attempt = 1, MAX_CLICK_RETRIES do
@@ -875,143 +861,12 @@ local function openMainInventory()
         if success then
             -- CRUCIAL WAIT: Give the game longer to load the BackpackApp GUI
             task.wait(0.5) 
-            print("Successfully attempted to open Backpack via Inventory button.")
         else
             warn("Failed to open Backpack via Inventory button after all retries.")
         end
 
     else
         warn("Could not find the main Backpack/Inventory UI button. Skipping explicit open.")
-        -- Persistent status with FALSE state (failure)
-        updatePetStatus("Backpack: false (Open button not found/skip).", 0) 
-    end
-end
-
--- Clicks all available pet buttons in BackpackApp by performing a targeted search.
-local function findAndClickPetButton()
-    if ShouldStop or not IS_SCRIPT_ACTIVE then return end
-    
-    if not IS_AUTO_PET_CLICK_ACTIVE then
-        print("Auto Pet Click is OFF. Skipping pet selection this cycle.")
-        return
-    end
-
-    local gui = LocalPlayer.PlayerGui
-    local BackpackApp = nil
-    local waitTimeout = 7 -- Increased timeout to 7 seconds for slower systems/loading
-    local startTime = tick()
-    
-    -- 1. WAIT: Wait for the main BackpackApp GUI to appear/enable
-    repeat
-        BackpackApp = gui:FindFirstChild("BackpackApp")
-        
-        -- FIX: Ensure tostring() is used when combining status messages with booleans
-        local bpStatus = BackpackApp and BackpackApp.Enabled and "true" or "false" 
-        
-        if BackpackApp then 
-            if BackpackApp.Enabled then break end -- Found and enabled
-        end
-        task.wait(0.1)
-        -- Provide continuous feedback while loading
-        updatePetStatus(string.format("Backpack: %s (Loading... %.1fs)", 
-            bpStatus, 
-            (tick() - startTime)), 0)
-    until BackpackApp and BackpackApp.Enabled or ShouldStop or (tick() - startTime > waitTimeout)
-
-    if not BackpackApp or not BackpackApp.Enabled then
-        warn(string.format("BackpackApp GUI failed to open or load within %d seconds. Skipping pet selection.", waitTimeout))
-        -- Persistent status with FALSE state (timeout)
-        updatePetStatus("Backpack: false (Failed to load/timeout).", 0)
-        return
-    end
-    
-    -- Now BackpackApp is found and enabled
-    updatePetStatus("Backpack: true (Found). Locating pet items...", 0)
-
-    -- 2. Traverse the path to the 'pets' container (Refactored for safety)
-    -- USE SAFE NAVIGATION (FindFirstChild) at every step to prevent errors
-    local frame = BackpackApp:FindFirstChild("Frame")
-    local body = frame and frame:FindFirstChild("Body")
-    local scrollComplex = body and body:FindFirstChild("ScrollComplex")
-    local scrollingFrame = scrollComplex and scrollComplex:FindFirstChild("ScrollingFrame")
-    
-    if not scrollingFrame then
-        warn("BackpackApp ScrollingFrame not found. Skipping pet selection this cycle.")
-        updatePetStatus("Backpack: true (Pet container not found).", 0)
-        return
-    end
-
-    local petsContainer = scrollingFrame:FindFirstChild("Content") and scrollingFrame.Content:FindFirstChild("pets")
-    local containerToSearch = petsContainer or scrollingFrame -- Fallback
-
-    if not containerToSearch then
-        warn("Could not find a valid pet container. Skipping pet selection.")
-        updatePetStatus("Backpack: true (Pet list missing).", 0)
-        return
-    end
-    
-    -- CRITICAL WAIT INCREASED: Give the content inside the ScrollingFrame time to render dynamically
-    print("Waiting 1.5s for pet items to render dynamically...")
-    task.wait(1.5) 
-
-    print("Searching for ALL usable pet buttons within the item containers using deep search...")
-    
-    -- **MODIFIED LOGIC: Prioritize the user-requested "Row0" frame.**
-    local targetContainer = containerToSearch:FindFirstChild("Row0") 
-    local searchScope = targetContainer or containerToSearch -- Use Row0 if found, otherwise use the general container
-    
-    if targetContainer then
-        print("TARGET: Found 'Row0' frame. Limiting pet click scope to this container as requested.")
-        updatePetStatus("Backpack: true (Targeting Row0 for click...)", 0)
-    else
-        warn("TARGET: 'Row0' frame not explicitly found. Clicking all found pet buttons in the general container (fallback).")
-        updatePetStatus("Backpack: true (Row0 not found - Clicking All...)", 0)
-    end
-
-    local clickCount = 0
-
-    -- 3. ACT: Click all pet buttons
-    for _, descendant in ipairs(searchScope:GetDescendants()) do
-        if ShouldStop or not IS_SCRIPT_ACTIVE then break end
-
-        if descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
-            
-            local lowerName = descendant.Name:lower()
-            local parentName = descendant.Parent.Name:lower()
-            
-            -- Exclude common UI buttons
-            local isExcluded = lowerName:match("exit") or lowerName:match("title") or lowerName:match("filter") 
-
-            -- **NEW EXCLUSION RULE:** Exclude 'add_more_pets' container and any name containing 'add' or 'exit'
-            if parentName == "add_more_pets" or lowerName:match("add") or lowerName:match("exit") then
-                isExcluded = true
-            end
-
-            if not isExcluded then
-                -- Check if it is the specific button found in the pet list (Button or TapButton or numbered ID)
-                local isPetItemButton = lowerName == "button" or lowerName == "tapbutton" or lowerName:match("^%d+%_") -- Matches items like "1_UUID" or "2_UUID"
-                
-                if isPetItemButton then
-                    print(string.format("Clicking Pet Button: %s (Parent: %s). Max attempts: %d", descendant.Name, descendant.Parent.Name, PET_CLICK_RETRIES))
-
-                    -- *** Aggressive PET_CLICK_RETRIES click retry for pet buttons ***
-                    local successfulClick = clickButton(descendant, PET_CLICK_RETRIES)
-                    
-                    if successfulClick then
-                        clickCount = clickCount + 1
-                        task.wait(0.05) -- Short wait between successful clicks
-                    end
-                end
-            end
-        end
-    end
-
-    if clickCount == 0 then
-        updatePetStatus("Backpack: true (No pets found/clicked).", 0)
-        warn("No usable pet buttons found inside the item containers after deep search.")
-    else
-        updatePetStatus(string.format("Backpack: true (Clicked %d pets! Backpack remains open.)", clickCount), 0)
-        print(string.format("Finished clicking %d available pet buttons in the BackpackApp. Backpack remains open.", clickCount))
     end
 end
 
@@ -1040,8 +895,6 @@ local function clickAllBasicSelects()
             if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
                 
                 -- *** ADDED RETRY LOOP FOR EACH BASIC SELECT BUTTON (5 attempts total) ***
-                print(string.format("Clicking BasicSelect Button: %s (Max Retries: %d)", buttonToClick.Parent.Name, MAX_CLICK_RETRIES))
-                
                 local success = false
                 for attempt = 1, MAX_CLICK_RETRIES do
                     if clickButton(buttonToClick, 1) then -- Use the core click function with 1 attempt per retry loop
@@ -1063,6 +916,86 @@ local function clickAllBasicSelects()
     end
     print(string.format("Finished clicking %d BasicSelect buttons (Total attempts across retries).", clickCount))
 end
+
+--------------------------------------------------------------------------------
+-- CONTINUOUS ROW0 PET CLICK LOOP (NEW)
+--------------------------------------------------------------------------------
+
+local function continuousRow0ClickLoop()
+    local gui = LocalPlayer.PlayerGui
+
+    while true do
+        -- Only run if BOTH main script and auto pet click are active
+        if IS_SCRIPT_ACTIVE and IS_AUTO_PET_CLICK_ACTIVE then
+            
+            -- 1. Ensure the Backpack/Inventory UI is open
+            openMainInventory()
+            task.wait(0.2) -- Short wait for the open attempt
+
+            local BackpackApp = gui:FindFirstChild("BackpackApp")
+
+            if BackpackApp and BackpackApp.Enabled then
+                updatePetStatus("Backpack: true. Clicking Row0 continuously...", 0)
+                
+                -- 2. Traverse the path to the 'Row0' container
+                local scrollingFrame = BackpackApp:FindFirstChild("Frame", true)
+                    and BackpackApp.Frame:FindFirstChild("Body", true)
+                    and BackpackApp.Frame.Body:FindFirstChild("ScrollComplex", true)
+                    and BackpackApp.Frame.Body.ScrollComplex:FindFirstChild("ScrollingFrame")
+
+                -- Traverse to the specific Row0 element
+                local targetContainer = scrollingFrame 
+                    and scrollingFrame:FindFirstChild("Content")
+                    and scrollingFrame.Content:FindFirstChild("pets") 
+                    and scrollingFrame.Content.pets:FindFirstChild("Row0") 
+                
+                if targetContainer then
+                    local clickCount = 0
+                    
+                    -- CRITICAL WAIT: Give the content inside Row0 time to render dynamically
+                    task.wait(0.2) 
+
+                    -- 3. Loop and click all valid pet buttons inside Row0
+                    for _, descendant in ipairs(targetContainer:GetDescendants()) do
+                        if descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
+                            local lowerName = descendant.Name:lower()
+                            
+                            -- Check if it is a pet item button (Button or TapButton or numbered ID)
+                            local isPetItemButton = lowerName == "button" or lowerName == "tapbutton" or lowerName:match("^%d+%_") 
+
+                            if isPetItemButton then
+                                -- Use the aggressive click function with PET_CLICK_RETRIES
+                                if clickButton(descendant, PET_CLICK_RETRIES) then
+                                    clickCount = clickCount + 1
+                                    task.wait(0.01) -- Very short wait between individual successful clicks
+                                end
+                            end
+                        end
+                    end
+                    
+                    -- Status update after a full cycle
+                    updatePetStatus(string.format("Backpack: true. Clicked %d pets in Row0. Looping...", clickCount), 0)
+                else
+                    updatePetStatus("Backpack: true. Row0 container not found (Waiting for items).", 0)
+                end
+            else
+                -- Backpack is not open/enabled
+                updatePetStatus("Backpack: false (Waiting for game to allow opening).", 0)
+            end
+            
+            -- CRITICAL: Wait between full click cycles to prevent excessive CPU usage/crashes
+            task.wait(0.1) -- Aggressive re-click speed
+            
+        else
+            -- When toggled off, wait longer
+            updatePetStatus(PET_MODE_DEFAULT_STATUS, 0)
+            task.wait(1.0)
+        end
+    end
+end
+
+-- START THE CONTINUOUS LOOP
+task.spawn(continuousRow0ClickLoop)
 
 --------------------------------------------------------------------------------
 -- UTILITY & TELEPORT FUNCTIONS
@@ -1166,7 +1099,7 @@ end
 
 
 --------------------------------------------------------------------------------
--- TELEPORT SEQUENCE FUNCTIONS
+-- TELEPORT SEQUENCE FUNCTIONS (Main Accessory Cycle - PET LOGIC REMOVED)
 --------------------------------------------------------------------------------
 
 -- Function to handle Mannequin teleportation and accessory equip cycle (The "others" step)
@@ -1242,7 +1175,6 @@ local function runFullSequence(minigameContainer)
     if initialTime and (initialTime <= TIMER_START_THRESHOLD) then
         print(string.format("!! Initial timer check failed: %s is <= %s. Round is too late. Resetting search.", initialTime, TIMER_START_THRESHOLD))
         updateControlStatus(string.format("Round too late (%s). Awaiting new game.", initialTime))
-        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
         return
     end
 
@@ -1251,7 +1183,6 @@ local function runFullSequence(minigameContainer)
 
     print(string.format("--- Starting Full Sequence (Cycle #%d). ---", cycleCount))
     updateControlStatus(string.format("Starting Cycle #%d: Initial Setup", cycleCount))
-    updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Ensure it starts at default
 
     IsSequenceActive = true
 
@@ -1274,11 +1205,12 @@ local function runFullSequence(minigameContainer)
     end
 
     -- ----------------------------------------------------
-    -- INITIAL SETUP SEQUENCE (PAW/FALLBACK -> ACCESSORIES -> 6S WAIT -> PETS -> RE-CLICK ACCESSORIES)
+    -- INITIAL SETUP SEQUENCE (PAW/FALLBACK -> ACCESSORIES -> 6S WAIT -> RE-CLICK ACCESSORIES)
+    -- NOTE: Pet logic is handled by the separate continuousRow0ClickLoop
     -- ----------------------------------------------------
     -- CHECK: Use the determined position for the first teleport/click sequence
     if initialSetupPosition and not ShouldStop and IS_SCRIPT_ACTIVE then
-        -- NEW CRITICAL LOGGING
+        
         print(string.format("--- START OF ROUND SETUP: Executing strict start sequence at initial position: %s ---", tostring(initialSetupPosition)))
 
         -- 1. Teleport to Paw (or Mannequin fallback)
@@ -1291,35 +1223,15 @@ local function runFullSequence(minigameContainer)
         clickAllBasicSelects()
         if ShouldStop or not IS_SCRIPT_ACTIVE then return end
         
-        -- **NEW: Wait 6 seconds at the Paw position as requested.**
+        -- **Wait 6 seconds at the Paw position as requested.**
         print(string.format("--- SETUP: Waiting %.1f seconds at Paw/Start position as requested. ---", PAW_WAIT_TIME))
         updateControlStatus(string.format("Setup: Waiting %.1fs at Paw...", PAW_WAIT_TIME))
         waitWithStopCheck(PAW_WAIT_TIME)
         if ShouldStop or not IS_SCRIPT_ACTIVE then return end
 
-        -- 3. Open the Backpack and then select all pets (ONLY IF TOGGLED ON)
-        if IS_AUTO_PET_CLICK_ACTIVE then
-            print("--- SETUP: Opening backpack and selecting ALL pets (TARGETING Row0). Backpack will remain OPEN. ---")
-            updateControlStatus("Setup: Selecting pets (Row0)... Backpack remains open.")
-            
-            -- Pet status updates are now handled persistently inside these functions
-            openMainInventory() -- Uses retries
-            if ShouldStop or not IS_SCRIPT_ACTIVE then return end
-            findAndClickPetButton() -- Pet buttons use their own aggressive retries (PET_CLICK_RETRIES)
-            if ShouldStop or not IS_SCRIPT_ACTIVE then return end
-            -- **REMOVED: closeBackpack() call**
-        else
-            print("--- SETUP: Skipping pet selection (Auto Pet Click OFF). ---")
-            updateControlStatus("Setup: Pet selection skipped.")
-            updatePetStatus("Backpack: false (Pet selection disabled).", 0) -- Set persistent skipped status
-        end
-        
-        -- 4. Final click to ensure accessory is confirmed after the Pet menu (or just the initial click if pets skipped) - uses internal retries
-        print("--- SETUP: Final click to ensure initial accessory is confirmed after pet action/skip. ---")
+        -- 3. Final click to ensure accessory is confirmed
+        print("--- SETUP: Final click to ensure initial accessory is confirmed. ---")
         updateControlStatus("Setup: Finalizing accessory choice...")
-        
-        -- Reset pet status to default after the pet steps are complete
-        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0)
         
         clickAllBasicSelects()
         if ShouldStop or not IS_SCRIPT_ACTIVE then return end
@@ -1329,7 +1241,6 @@ local function runFullSequence(minigameContainer)
     else
         -- If initialSetupPosition is nil, this warning confirms the skip.
         warn("!! CRITICAL: Initial setup position not found (or script stopped). Setup sequence was skipped.")
-        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
     end
 
     -- Delay before starting the timed cycles (only if the initial setup didn't already return)
@@ -1340,7 +1251,7 @@ local function runFullSequence(minigameContainer)
     -- END INITIAL SETUP SEQUENCE
     -- ----------------------------------------------------
 
-    -- 5. Execute Mannequin sequence (The "others") - the 2nd logic
+    -- 4. Execute Mannequin sequence (The "others") - the 2nd logic
     if not ShouldStop and IS_SCRIPT_ACTIVE then
         -- returnPositionForMannequins is still the original pawPosition (may be nil, which is fine)
         teleportToMannequins(minigameContainer, returnPositionForMannequins)
@@ -1350,11 +1261,9 @@ local function runFullSequence(minigameContainer)
     if not ShouldStop and IS_SCRIPT_ACTIVE then
         print("--- FULL SEQUENCE COMPLETE. Waiting for timer reset to continue loop. ---")
         updateControlStatus("Cycle Finished. Awaiting new game...")
-        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
     else
         print("--- Sequence was interrupted by timer or shut off. Resetting to search state. ---")
         updateControlStatus("Cycle Interrupted. Awaiting search reset.")
-        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
     end
 
     IsSequenceActive = false
