@@ -382,10 +382,14 @@ local TIMER_START_THRESHOLD = "00:30" -- If the timer is <= this value when star
 local MANNEQUIN_TEST_TIME = 5.0 -- Time in seconds to wait at each mannequin for testing (Reduced for speed)
 
 -- The status message configuration
-local VERSION_TEXT = "V3.4 Active - Event Cycle Endurance Mode" -- Updated version text for event duration
+local VERSION_TEXT = "V3.9 Pet Exclude Fix" -- Updated version text for the formatting crash fix
 local STATUS_DURATION = 5.0
 local STATUS_COLOR = Color3.fromRGB(255, 0, 0) -- Bright Red for high visibility
 local RESTORE_COLOR = Color3.fromRGB(255, 255, 255) -- White (Used if original color can't be stored)
+
+-- NEW: Default status for the Pet Mode section (Updated for clarity)
+local PET_MODE_DEFAULT_STATUS = "[Pet Mode] Disabled (OFF) or Awaiting new round (ON)."
+local PET_MODE_DEFAULT_COLOR = Color3.new(0.8, 0.8, 0.8) -- Light Gray for default text
 
 -- Services and Player Setup
 local Players = game:GetService("Players")
@@ -398,7 +402,7 @@ local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 
 -- Global Control Flags
 local IS_SCRIPT_ACTIVE = true        -- Is the entire script running (controlled by main UI toggle)
-local IS_AUTO_PET_CLICK_ACTIVE = true -- NEW: Controls pet clicking within the sequence
+local IS_AUTO_PET_CLICK_ACTIVE = true -- Controls pet clicking within the sequence
 local IsSequenceActive = false       -- Is the teleport/click sequence currently running? (internal game state)
 local ShouldStop = false             -- Has the timer triggered a stop signal? (internal game state)
 
@@ -416,7 +420,8 @@ local MINIGAME_CONTAINER_COMPONENTS = {
 -- UI Element Holders (Added for the control panel)
 local statusLabel = nil
 local toggleButton = nil
-local petClickToggleButton = nil -- NEW: Handle for the new button
+local petStatusLabel = nil -- Handle for the temporary pet status
+local petClickToggleButton = nil 
 local screenGui = nil -- Store the main ScreenGui
 
 --------------------------------------------------------------------------------
@@ -427,6 +432,26 @@ local screenGui = nil -- Store the main ScreenGui
 local function updateControlStatus(text)
     if statusLabel then
         statusLabel.Text = "[FF Mode] " .. text
+    end
+end
+
+-- NEW Function to update the temporary pet status text, clearing it after a delay
+local function updatePetStatus(text, clearAfter)
+    if petStatusLabel then
+        petStatusLabel.Text = text
+        
+        -- Use Yellow/Gold for active process, Light Gray for default/inactive
+        petStatusLabel.TextColor3 = (clearAfter == 0 and PET_MODE_DEFAULT_COLOR) or Color3.new(1, 1, 0) -- Yellow/Gold for active
+
+        if clearAfter and clearAfter > 0 then
+            task.delay(clearAfter, function()
+                if petStatusLabel and petStatusLabel.Text == text then
+                    -- Reset to the permanent default status text
+                    petStatusLabel.Text = PET_MODE_DEFAULT_STATUS
+                    petStatusLabel.TextColor3 = PET_MODE_DEFAULT_COLOR -- Reset color
+                end
+            end)
+        end
     end
 end
 
@@ -445,7 +470,7 @@ local function updateToggleButton()
     end
 end
 
--- NEW Function to update the Pet Click button's appearance
+-- Function to update the Pet Click button's appearance
 local function updatePetClickToggleButton()
     if petClickToggleButton then
         if IS_AUTO_PET_CLICK_ACTIVE then
@@ -466,12 +491,17 @@ local function onToggleClicked()
     updateToggleButton()
 end
 
--- NEW Function to handle the Auto Pet Click toggle
+-- Function to handle the Auto Pet Click toggle
 local function onPetClickToggleClicked()
     IS_AUTO_PET_CLICK_ACTIVE = not IS_AUTO_PET_CLICK_ACTIVE
     updatePetClickToggleButton()
     print(string.format("Auto Pet Click mode set to: %s", IS_AUTO_PET_CLICK_ACTIVE and "ACTIVE" or "INACTIVE"))
     updateControlStatus(string.format("Pet Click Toggled: %s", IS_AUTO_PET_CLICK_ACTIVE and "ON" or "OFF"))
+    
+    -- Update pet status immediately based on the new toggle state
+    if not IS_AUTO_PET_CLICK_ACTIVE then
+        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0)
+    end
 end
 
 
@@ -496,15 +526,15 @@ local function createFullUI()
     -- UI Container Frame (Holds all controls, now taller)
     local controlFrame = Instance.new("Frame")
     controlFrame.Name = "ControlPanel"
-    -- INCREASED HEIGHT: 80 (Status + Main Buttons) + 45 (Pet Click Button + Padding) = 125
-    controlFrame.Size = UDim2.new(0, 600, 0, 125)
+    -- INCREASED HEIGHT for new Pet Status Label: 160
+    controlFrame.Size = UDim2.new(0, 600, 0, 160)
     controlFrame.Position = UDim2.new(0.5, -300, 0, 200) -- Centered, moved down to 200 pixels
     controlFrame.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
     controlFrame.BackgroundTransparency = 0.1
     controlFrame.BorderSizePixel = 0
     controlFrame.Parent = screenGui
 
-    -- Status Text Label (Top part of the frame)
+    -- Status Text Label (Top part of the frame - Y=0)
     statusLabel = Instance.new("TextLabel")
     statusLabel.Name = "ScriptStatus"
     statusLabel.Size = UDim2.new(1, 0, 0, 30) -- Full width, 30 height
@@ -546,14 +576,31 @@ local function createFullUI()
     closeButton.Parent = controlFrame
     closeButton.MouseButton1Click:Connect(onCloseClicked)
 
-    -- NEW: Auto Pet Click Toggle Button (Position Y: 80 - below main buttons)
+    -- NEW: Pet Status Label (Middle status, position Y: 80)
+    petStatusLabel = Instance.new("TextLabel")
+    petStatusLabel.Name = "PetActivityStatus"
+    petStatusLabel.Size = UDim2.new(1, 0, 0, 30) -- Full width, 30 height
+    petStatusLabel.Position = UDim2.new(0, 0, 0, 80) -- Positioned below main buttons (30+40+10 padding)
+    petStatusLabel.BackgroundColor3 = Color3.new(0, 0, 0)
+    petStatusLabel.BackgroundTransparency = 0.3 -- MATCHING main status transparency
+    petStatusLabel.BorderSizePixel = 0
+    -- Set the permanent default status text
+    petStatusLabel.Text = PET_MODE_DEFAULT_STATUS 
+    petStatusLabel.TextColor3 = PET_MODE_DEFAULT_COLOR -- Light Gray
+    petStatusLabel.Font = Enum.Font.SourceSans
+    petStatusLabel.TextSize = 18 -- MATCHING main status size
+    petStatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+    petStatusLabel.TextYAlignment = Enum.TextYAlignment.Center
+    petStatusLabel.Parent = controlFrame
+
+    -- Auto Pet Click Toggle Button (Position Y: 115 - below pet status)
     petClickToggleButton = Instance.new("TextButton")
     petClickToggleButton.Name = "AutoPetClickToggle"
     petClickToggleButton.Size = UDim2.new(1, -10, 0, 40) -- Full width minus padding
-    petClickToggleButton.Position = UDim2.new(0, 5, 0, 80) -- 30 (Status) + 40 (Toggle) + 10 (Padding) = 80
-    petClickToggleButton.BackgroundColor3 = Color3.new(1, 1, 1)
-    petClickToggleButton.Text = "Auto Pet Click: OFF/ON"
-    petClickToggleButton.TextColor3 = Color3.new(0, 0, 0)
+    petClickToggleButton.Position = UDim2.new(0, 5, 0, 115) -- 80 (Pet Status Start) + 30 (Pet Status Height) + 5 (Padding) = 115
+    petClickToggleButton.BackgroundColor3 = Color3.fromRGB(0, 128, 255) -- Blue
+    petClickToggleButton.Text = "Auto Pet Click: ON"
+    petClickToggleButton.TextColor3 = Color3.new(1, 1, 1)
     petClickToggleButton.Font = Enum.Font.SourceSansBold
     petClickToggleButton.TextSize = 18
     petClickToggleButton.Parent = controlFrame
@@ -561,7 +608,7 @@ local function createFullUI()
 
     -- Initial state update
     updateToggleButton()
-    updatePetClickToggleButton() -- NEW: Initialize the pet button
+    updatePetClickToggleButton() -- Initialize the pet button
 end
 
 --------------------------------------------------------------------------------
@@ -604,15 +651,13 @@ end
 -- Utility function to read the current timer text from the GUI
 local function getCurrentTimerText()
     -- Find the timer label relative to the PlayerGui
-    local valueLabel = LocalPlayer.PlayerGui:FindFirstChild("FashionFrenzyInGameApp", true)
-
-    if valueLabel and valueLabel:IsA("ScreenGui") then
-        -- Traverse the remaining path
-        valueLabel = valueLabel:FindFirstChild("Body")
-            and valueLabel.Body:FindFirstChild("Left")
-            and valueLabel.Body.Left:FindFirstChild("Container")
-            and valueLabel.Body.Left.Container:FindFirstChild("ValueLabel")
-    end
+    local app = LocalPlayer.PlayerGui:FindFirstChild("FashionFrenzyInGameApp", true)
+    
+    -- Refactored for safety against misplaced symbols
+    local body = app and app:FindFirstChild("Body")
+    local left = body and body:FindFirstChild("Left")
+    local container = left and left.Container
+    local valueLabel = container and container:FindFirstChild("ValueLabel")
 
     if valueLabel and valueLabel:IsA("TextLabel") then
         return valueLabel.Text
@@ -697,22 +742,66 @@ local function clickButton(button)
     print("Successfully fired events for:", button.Name)
 end
 
--- Helper function to open the main Inventory/Backpack UI before finding the pet
+-- Helper function to check the current visibility state of the BackpackApp
+local function checkBackpackVisibility()
+    local gui = LocalPlayer.PlayerGui
+    local backpackApp = gui:FindFirstChild("BackpackApp")
+    
+    local isVisible = backpackApp and backpackApp:IsA("ScreenGui") and backpackApp.Enabled
+
+    -- FIX: Convert boolean to string for string.format
+    local statusText = tostring(isVisible) 
+    print(string.format("BackpackApp existence/enabled check: %s", statusText))
+    
+    return isVisible
+end
+
+-- NEW: Safely finds the primary inventory/backpack button using recursive search.
+local function findInventoryButton()
+    local gui = LocalPlayer.PlayerGui
+    -- List of common button names, searching recursively through the PlayerGui
+    local SEARCH_NAMES = {"InventoryButton", "BackpackButton", "BagButton", "ItemsButton"}
+    
+    for _, name in ipairs(SEARCH_NAMES) do
+        -- Use recursive search (true) for maximum resilience
+        local button = gui:FindFirstChild(name, true)
+        if button and (button:IsA("TextButton") or button:IsA("ImageButton")) then
+            return button
+        end
+    end
+    return nil
+end
+
+-- Function to safely open the main Inventory/Backpack UI
 local function openMainInventory()
     if ShouldStop or not IS_SCRIPT_ACTIVE then return end
-    -- Common names for the main backpack button in the PlayerGui
-    local button = LocalPlayer.PlayerGui:FindFirstChild("InventoryButton", true)
-    if not button then
-        button = LocalPlayer.PlayerGui:FindFirstChild("BackpackButton", true)
+    
+    -- 1. CHECK: Is the BackpackApp GUI already open/enabled?
+    if checkBackpackVisibility() then
+        print("BackpackApp is already enabled/open. Skipping inventory button click.")
+        -- Persistent status with TRUE state
+        updatePetStatus("Backpack: true (Already Open).", 0)
+        task.wait(0.5)
+        return
     end
 
-    if button and button:IsA("GuiObject") then
-        print("Explicitly clicking the main Inventory/Backpack UI button.")
+    -- 2. SEARCH: Find the button needed to open the GUI
+    updatePetStatus("Backpack: false (Searching for open button...)", 0)
+    local button = findInventoryButton()
+
+    -- 3. ACT: Click the button if found
+    if button then
+        print("Explicitly clicking the main Inventory/Backpack UI button:", button.Name)
+        -- Persistent status with FALSE state (pre-click)
+        updatePetStatus("Backpack: false (Clicking open now...)", 0)
         clickButton(button)
-        -- Give UI a moment to start loading the BackpackApp
-        task.wait(0.2)
+        -- CRUCIAL WAIT: Give the game longer to load the BackpackApp GUI
+        task.wait(0.5) 
+        -- Check visibility again after click (status will update in findAndClickPetButton)
     else
         warn("Could not find the main Backpack/Inventory UI button. Skipping explicit open.")
+        -- Persistent status with FALSE state (failure)
+        updatePetStatus("Backpack: false (Open button not found/skip).", 0) 
     end
 end
 
@@ -720,7 +809,6 @@ end
 local function findAndClickPetButton()
     if ShouldStop or not IS_SCRIPT_ACTIVE then return end
     
-    -- NEW: Check the pet click toggle flag
     if not IS_AUTO_PET_CLICK_ACTIVE then
         print("Auto Pet Click is OFF. Skipping pet selection this cycle.")
         return
@@ -728,95 +816,112 @@ local function findAndClickPetButton()
 
     local gui = LocalPlayer.PlayerGui
     local BackpackApp = nil
-    local waitTimeout = 5 -- Wait up to 5 seconds for the UI to appear
+    local waitTimeout = 7 -- Increased timeout to 7 seconds for slower systems/loading
     local startTime = tick()
-
-    -- 1. WAIT for the main BackpackApp GUI to appear after clicking the inventory button
+    
+    -- 1. WAIT: Wait for the main BackpackApp GUI to appear/enable
     repeat
         BackpackApp = gui:FindFirstChild("BackpackApp")
-        if not BackpackApp then
-            task.wait(0.1)
+        
+        -- FIX: Ensure tostring() is used when combining status messages with booleans
+        local bpStatus = BackpackApp and BackpackApp.Enabled and "true" or "false" 
+        
+        if BackpackApp then 
+            if BackpackApp.Enabled then break end -- Found and enabled
         end
-    until BackpackApp or ShouldStop or (tick() - startTime > waitTimeout)
+        task.wait(0.1)
+        -- Provide continuous feedback while loading
+        updatePetStatus(string.format("Backpack: %s (Loading... %.1fs)", 
+            bpStatus, 
+            (tick() - startTime)), 0)
+    until BackpackApp and BackpackApp.Enabled or ShouldStop or (tick() - startTime > waitTimeout)
 
-    if not BackpackApp then
-        warn(string.format("BackpackApp GUI failed to open or load within %d seconds. Skipping pet selection this cycle.", waitTimeout))
+    if not BackpackApp or not BackpackApp.Enabled then
+        warn(string.format("BackpackApp GUI failed to open or load within %d seconds. Skipping pet selection.", waitTimeout))
+        -- Persistent status with FALSE state (timeout)
+        updatePetStatus("Backpack: false (Failed to load/timeout).", 0)
         return
     end
+    
+    -- Now BackpackApp is found and enabled
+    updatePetStatus("Backpack: true (Found). Locating pet items...", 0)
 
-    -- 2. Traverse the path to the 'pets' container
-    local scrollingFrame = BackpackApp:FindFirstChild("Frame")
-        and BackpackApp.Frame:FindFirstChild("Body")
-        and BackpackApp.Frame.Body:FindFirstChild("ScrollComplex")
-        and BackpackApp.Frame.Body.ScrollComplex:FindFirstChild("ScrollingFrame")
-
+    -- 2. Traverse the path to the 'pets' container (Refactored for safety)
+    -- USE SAFE NAVIGATION (FindFirstChild) at every step to prevent errors
+    local frame = BackpackApp:FindFirstChild("Frame")
+    local body = frame and frame:FindFirstChild("Body")
+    local scrollComplex = body and body:FindFirstChild("ScrollComplex")
+    local scrollingFrame = scrollComplex and scrollComplex:FindFirstChild("ScrollingFrame")
+    
     if not scrollingFrame then
         warn("BackpackApp ScrollingFrame not found. Skipping pet selection this cycle.")
+        updatePetStatus("Backpack: true (Pet container not found).", 0)
         return
     end
 
-    -- We check both 'Content/pets' (common structure) and directly for 'Row0' (user path)
     local petsContainer = scrollingFrame:FindFirstChild("Content") and scrollingFrame.Content:FindFirstChild("pets")
-
-    -- Fallback to searching the ScrollingFrame itself if the Content/pets path is missing,
-    -- or if the items are directly placed (e.g., Row0).
-    local containerToSearch = petsContainer or scrollingFrame
+    local containerToSearch = petsContainer or scrollingFrame -- Fallback
 
     if not containerToSearch then
-        warn("Could not find a valid pet container (pets or ScrollingFrame). Skipping pet selection.")
+        warn("Could not find a valid pet container. Skipping pet selection.")
+        updatePetStatus("Backpack: true (Pet list missing).", 0)
         return
     end
+    
+    -- CRITICAL WAIT INCREASED: Give the content inside the ScrollingFrame time to render dynamically
+    print("Waiting 1.5s for pet items to render dynamically...")
+    task.wait(1.5) 
 
-    print("Searching for ALL usable pet buttons within the item containers...")
+    print("Searching for ALL usable pet buttons within the item containers using deep search...")
+    updatePetStatus("Backpack: true (Clicking all pet buttons...)", 0)
 
-    local foundPetButton = false
+    local clickCount = 0
 
-    -- Iterate through all children (which should be the rows or item frames, e.g., 'Row0', 'Row1', or dynamic item names)
-    for _, petContainer in ipairs(containerToSearch:GetChildren()) do
-        if ShouldStop or not IS_SCRIPT_ACTIVE then return end
+    -- 3. ACT: Click all pet buttons
+    for _, descendant in ipairs(containerToSearch:GetDescendants()) do
+        if ShouldStop or not IS_SCRIPT_ACTIVE then break end
 
-        -- Explicitly check and skip any container related to "add_more_pets"
-        if petContainer.Name:lower():match("add_more_pets") then
-            print(string.format("Skipping excluded container: %s", petContainer.Name))
-            continue
-        end
+        if descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
+            
+            local lowerName = descendant.Name:lower()
+            local parentName = descendant.Parent.Name:lower()
+            
+            -- Exclude common UI buttons
+            local isExcluded = lowerName:match("exit") or lowerName:match("title") or lowerName:match("filter") 
 
-        local targetElement = nil
-
-        -- 3. Targeted Fix: Find the nested Frame *inside* the pet container
-        local nestedFrame = petContainer:FindFirstChild("Frame", false)
-
-        if nestedFrame and nestedFrame:IsA("GuiObject") then
-            -- 4. Look for the button inside that nested Frame (using recursive search just in case)
-            targetElement = nestedFrame:FindFirstChild("Button", true)
-            if not targetElement then
-                targetElement = nestedFrame:FindFirstChild("TapButton", true)
+            -- **NEW EXCLUSION RULE:** Exclude 'add_more_pets' container and any name containing 'add'
+            if parentName == "add_more_pets" or lowerName:match("add") then
+                isExcluded = true
             end
-        end
 
-        -- Fallback: If the button wasn't in a nested Frame, check if it's directly inside the pet container
-        if not targetElement then
-            targetElement = petContainer:FindFirstChild("Button", true) or petContainer:FindFirstChild("TapButton", true)
-            if not targetElement and (petContainer:IsA("TextButton") or petContainer:IsA("ImageButton")) then
-                   -- Final fallback: Check if the container itself is the clickable button
-                targetElement = petContainer
+            if not isExcluded then
+                -- Check if it is the specific button found in the pet list (Button or TapButton)
+                local isPetItemButton = lowerName == "button" or lowerName == "tapbutton" or lowerName:match("^%d+%_") -- Matches items like "1_UUID" or "2_UUID"
+                
+                -- The parent name check is removed for robustness, relying on the name and container
+                if isPetItemButton then
+                    print(string.format("Clicking Pet Button: %s (Parent: %s)", descendant.Name, descendant.Parent.Name))
+
+                    -- *** Aggressive 3-attempt click retry for pet buttons ***
+                    for attempt = 1, 3 do
+                        clickButton(descendant)
+                        task.wait(0.05) -- Short wait between retries
+                    end
+                    -- *** END NEW ***
+                    
+                    clickCount = clickCount + 1
+                    task.wait(0.05)
+                end
             end
-        end
-
-
-        -- Execute the click
-        if targetElement and (targetElement:IsA("TextButton") or targetElement:IsA("ImageButton")) then
-            print(string.format("Clicking Pet Button: %s (Parent: %s)", targetElement.Name, targetElement.Parent.Name))
-            clickButton(targetElement)
-            foundPetButton = true
-            task.wait(0.05) -- Small delay between clicks
         end
     end
 
-    if not foundPetButton then
+    if clickCount == 0 then
+        updatePetStatus("Backpack: true (No pets found/clicked).", 0)
         warn("No usable pet buttons found inside the item containers after deep search.")
     else
-        print("Finished clicking all available pet buttons in the BackpackApp.")
+        updatePetStatus(string.format("Backpack: true (Clicked %d pets!)", clickCount), 0)
+        print(string.format("Finished clicking %d available pet buttons in the BackpackApp.", clickCount))
     end
 end
 
@@ -825,16 +930,30 @@ end
 local function closeBackpack()
     if ShouldStop or not IS_SCRIPT_ACTIVE then return end
 
-    local exitButton = LocalPlayer.PlayerGui:FindFirstChild("BackpackApp")
-        and LocalPlayer.PlayerGui.BackpackApp:FindFirstChild("Frame")
-        and LocalPlayer.PlayerGui.BackpackApp.Frame:FindFirstChild("Header")
-        and LocalPlayer.PlayerGui.BackpackApp.Frame.Header:FindFirstChild("ExitButton")
+    local app = LocalPlayer.PlayerGui:FindFirstChild("BackpackApp")
+    
+    -- Use safe navigation to find the exit button
+    local frame = app and app:FindFirstChild("Frame")
+    local header = frame and frame:FindFirstChild("Header")
+    local exitButton = header and header:FindFirstChild("ExitButton")
 
     if exitButton then
         print("Closing Backpack App.")
+        updatePetStatus("Backpack: true (Closing...)", 0)
         clickButton(exitButton)
+        task.wait(0.2) -- Wait for it to close
+
+        -- Verify closed state
+        if not checkBackpackVisibility() then
+            updatePetStatus("Backpack: false (Closed successfully).", 0)
+        else
+            updatePetStatus("Backpack: true (Close attempt failed).", 0)
+            warn("Backpack CloseButton clicked, but BackpackApp.Enabled is still true.")
+        end
+
     else
-        warn("Backpack ExitButton not found.")
+        warn("Backpack ExitButton not found. Attempting to skip close.")
+        updatePetStatus("Backpack: false (Close button missing/skip).", 0)
     end
 end
 
@@ -857,7 +976,7 @@ local function clickAllBasicSelects()
 
         if templateFrame:IsA("GuiObject") then
             -- Use the recursive FindFirstChild(name, true) to search deeply
-            -- inside the templateFrame for the TapButton, handling nested frames.
+            -- inside the templateFrame for the TapButton
             local buttonToClick = templateFrame:FindFirstChild("TapButton", true)
 
             if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
@@ -1053,6 +1172,7 @@ local function runFullSequence(minigameContainer)
     if initialTime and (initialTime <= TIMER_START_THRESHOLD) then
         print(string.format("!! Initial timer check failed: %s is <= %s. Round is too late. Resetting search.", initialTime, TIMER_START_THRESHOLD))
         updateControlStatus(string.format("Round too late (%s). Awaiting new game.", initialTime))
+        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
         return
     end
 
@@ -1061,6 +1181,7 @@ local function runFullSequence(minigameContainer)
 
     print(string.format("--- Starting Full Sequence (Cycle #%d). ---", cycleCount))
     updateControlStatus(string.format("Starting Cycle #%d: Initial Setup", cycleCount))
+    updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Ensure it starts at default
 
     IsSequenceActive = true
 
@@ -1084,10 +1205,10 @@ local function runFullSequence(minigameContainer)
     end
 
     -- ----------------------------------------------------
-    -- INITIAL SETUP SEQUENCE (PAW -> ACCESSORIES -> PETS)
+    -- INITIAL SETUP SEQUENCE (PAW -> ACCESSORIES -> PETS -> RE-CLICK ACCESSORIES)
     -- ----------------------------------------------------
     if pawPosition and not ShouldStop and IS_SCRIPT_ACTIVE then
-        print("--- START OF ROUND SETUP: Executing strict start sequence (Paw -> Accessories -> Pets). ---")
+        print("--- START OF ROUND SETUP: Executing strict start sequence (Paw -> Accessories -> Pets -> Re-Click Accessories). ---")
 
         -- 1. Teleport to Paw (or Mannequin fallback)
         TeleportTo(pawPosition)
@@ -1103,21 +1224,35 @@ local function runFullSequence(minigameContainer)
         if IS_AUTO_PET_CLICK_ACTIVE then
             print("--- SETUP: Opening backpack, selecting ALL pets, and closing (Auto Pet Click ON). ---")
             updateControlStatus("Setup: Selecting all Pets...")
+            
+            -- Pet status updates are now handled persistently inside these functions
             openMainInventory()
             if ShouldStop or not IS_SCRIPT_ACTIVE then return end
-            findAndClickPetButton() -- This is the key fix area
+            findAndClickPetButton()
             if ShouldStop or not IS_SCRIPT_ACTIVE then return end
             closeBackpack()
             if ShouldStop or not IS_SCRIPT_ACTIVE then return end
         else
             print("--- SETUP: Skipping pet selection (Auto Pet Click OFF). ---")
             updateControlStatus("Setup: Pet selection skipped.")
+            updatePetStatus("Backpack: false (Pet selection disabled).", 0) -- Set persistent skipped status
         end
+        
+        -- 4. NEW: Final click to ensure accessory is confirmed after the Pet menu (or just the initial click if pets skipped)
+        print("--- SETUP: Final click to ensure initial accessory is confirmed after pet action/skip. ---")
+        updateControlStatus("Setup: Finalizing accessory choice...")
+        
+        -- Reset pet status to default after the pet steps are complete
+        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0)
+        
+        clickAllBasicSelects()
+        if ShouldStop or not IS_SCRIPT_ACTIVE then return end
 
         print("--- SETUP COMPLETE. Proceeding to Mannequin cycles (The 'others'). ---")
         updateControlStatus("Setup Complete. Starting Mannequin Cycle.")
     else
         warn("!! CRITICAL: Paw position not found, and initial setup was skipped.")
+        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
     end
 
     -- Delay before starting the timed cycles
@@ -1128,7 +1263,7 @@ local function runFullSequence(minigameContainer)
     -- END INITIAL SETUP SEQUENCE
     -- ----------------------------------------------------
 
-    -- 4. Execute Mannequin sequence (The "others")
+    -- 5. Execute Mannequin sequence (The "others")
     if not ShouldStop and IS_SCRIPT_ACTIVE then
         -- This variable holds the position for the return teleport
         teleportToMannequins(minigameContainer, returnPositionForMannequins)
@@ -1138,9 +1273,11 @@ local function runFullSequence(minigameContainer)
     if not ShouldStop and IS_SCRIPT_ACTIVE then
         print("--- FULL SEQUENCE COMPLETE. Waiting for timer reset to continue loop. ---")
         updateControlStatus("Cycle Finished. Awaiting new game...")
+        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
     else
         print("--- Sequence was interrupted by timer or shut off. Resetting to search state. ---")
         updateControlStatus("Cycle Interrupted. Awaiting search reset.")
+        updatePetStatus(PET_MODE_DEFAULT_STATUS, 0) -- Reset pet status permanently
     end
 
     IsSequenceActive = false
@@ -1165,14 +1302,24 @@ while true do
     local minigameContainer = Workspace
     local foundAll = true
 
-    -- Traverse the path to find the common MINIGAME container
+    -- Try to find the common MINIGAME container using the defined path
     for i, name in ipairs(MINIGAME_CONTAINER_COMPONENTS) do
         if not minigameContainer then break end
 
         if name == "FashionFrenzy" then
-            minigameContainer = findChildByPrefix(minigameContainer, name)
+            -- Use findChildByPrefix to handle the unique ID suffix
+            local ffContainer = findChildByPrefix(minigameContainer, name)
+            
+            -- FALLBACK: If prefix search fails, try a recursive FindFirstChild from the top of the search path
+            if not ffContainer and i > 1 and i == #MINIGAME_CONTAINER_COMPONENTS - 2 then
+                warn("Primary FashionFrenzy search failed. Trying recursive fallback from Workspace.")
+                ffContainer = Workspace:FindFirstChild(name, true) -- Search recursively from Workspace
+            end
+
+            minigameContainer = ffContainer
+
         elseif i == 1 then
-            -- Using WaitForChild for the top-level folder
+            -- Using WaitForChild for the top-level folder (e.g., "Interiors")
             minigameContainer = minigameContainer:WaitForChild(name, SEARCH_WAIT_TIME)
         else
             minigameContainer = minigameContainer:FindFirstChild(name)
@@ -1195,8 +1342,6 @@ while true do
     -- Wait before attempting to search/restart the cycle again
     task.wait(SEARCH_WAIT_TIME)
 end
-
-
 
 
 
