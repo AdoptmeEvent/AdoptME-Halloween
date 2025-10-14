@@ -1,22 +1,380 @@
+
 --[[
-    Roblox Automation Script: Continuous Minigame Sequence
+ 	Roblox Minigame Exit Trigger Script
 
-    This script runs continuously, searching for the game map. When the map is found,
-    it executes a sequence of teleports and clicks. The sequence is instantly halted
-    if the in-game timer reaches "00:10" or "00:20", immediately resetting the script
-    to search for the next game round.
+ 	This script loads the specified minigame client module and calls key 
+ 	functions ('exit_minigame', 'player_selected_door', 'escaped', and 'player_selected_door_msg')
+ 	with mock data, simulating the flow of the minigame.
 
-    -- Key GUI Targets --
-    1. Clicks TapButton elements in InteractionsApp.BasicSelects.
-    2. Clicks the dynamically named pet item or a nested button in BackpackApp, 
-       explicitly skipping any element named "add_more_pets".
+ 	*** FIX APPLIED: Refactored function lookups and injected the 'player_selected_door'
+ 	               function into the mock context for 'player_selected_door_msg' to resolve 
+ 	               the "attempt to call missing method" error. The 'get_room' mock 
+                   is also simplified to ensure it always returns a non-nil room object. ***
+ 	
+ 	WARNING: Calling internal game functions directly can lead to unexpected 
+ 	behavior or errors if the surrounding environment (like required upvalues 
+ 	or global states) is not correctly initialized. This is intended for 
+ 	testing or development purposes only.
+--]]
 
-    -- Execution Flow (Strict Start Sequence) --
-    1. Teleport to Paw Position (or closest fallback).
-    2. Click ALL BasicSelects buttons (Initial Accessory Equip).
-    3. Open Backpack, click ALL Pet Buttons, then close Backpack (Initial Pet Equip).
-    4. Proceed to Mannequin cycling (timed accessory testing).
-]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+-- Define the module path components
+local MODULE_PATH_COMPONENTS = {
+ 	"SharedModules",
+ 	"ContentPacks",
+ 	"Halloween2025",
+ 	"Minigames",
+ 	"HauntletMinigameClient"
+}
+
+-- == 1. Helper Functions ==
+
+-- Helper function to recursively find a function by name in a table
+local function findFunctionRecursively(t, funcName, visited)
+ 	visited = visited or {}
+ 	
+ 	if visited[t] then return nil end
+ 	visited[t] = true
+ 	
+ 	for key, value in pairs(t) do
+ 	 	-- 1. Check if the value is the target function (by string representation)
+ 	 	-- or if the key is the function name
+ 	 	if (type(value) == "function" and tostring(value):find(funcName)) or 
+ 	 	   (key == funcName and type(value) == "function") then
+ 	 	 	return value
+ 	 	end
+
+ 	 	-- 2. Recurse only if the value is a table that hasn't been visited.
+ 	 	if type(value) == "table" and value ~= t then
+ 	 	 	-- Safely check if the table can be iterated (not an instance or protected table)
+ 	 	 	local pcallSuccess, iterResult = pcall(function()
+ 	 	 	 	for _, _ in pairs(value) do end
+ 	 	 	 	return true
+ 	 	 	end)
+
+ 	 	 	if pcallSuccess and iterResult then
+ 	 	 	 	local foundFunc = findFunctionRecursively(value, funcName, visited)
+ 	 	 	 	if foundFunc then
+ 	 	 	 	 	return foundFunc
+ 	 	 	 	end
+ 	 	 	end
+ 	 	end
+ 	end
+ 	return nil
+end
+
+local function getModuleInstance(pathComponents)
+ 	local currentInstance = ReplicatedStorage
+ 	for _, name in ipairs(pathComponents) do
+ 	 	local child = currentInstance:WaitForChild(name, 5)
+ 	 	if child then
+ 	 	 	currentInstance = child
+ 	 	else
+ 	 	 	warn("Could not find part of the module path: '" .. name .. "'")
+ 	 	 	return nil
+ 	 	end
+ 	end
+ 	return currentInstance
+end
+
+-- == 2. Core Mock Setup (Reused across functions) ==
+
+-- Mock TextLabel object to simulate the GUI element being updated
+local mockTextLabel = {
+ 	Text = "0", -- Start with 0 so tonumber() works
+ 	Name = "TextLabel",
+}
+
+-- Mock the workspace.Interiors object
+local mockInteriors = {
+ 	GetChildren = function()
+ 	 	print("MOCK: workspace.Interiors:GetChildren() called.")
+ 	 	return {} -- Return an empty table of children
+ 	end,
+ 	FindFirstChild = function(name)
+ 	 	if name == "HauntletInterior" then
+ 	 	 	-- Mock the room container found within Interiors
+ 	 	 	return { 
+ 	 	 	 	GetChildren = function() return {} end,
+ 	 	 	 	DoorCounters = {
+ 	 	 	 	 	FindFirstChild = function(counterID)
+ 	 	 	 	 	 	print("MOCK: DoorCounters:FindFirstChild() called for counter " .. tostring(counterID))
+ 	 	 	 	 	 	return {
+ 	 	 	 	 	 	 	PrimaryPart = {
+ 	 	 	 	 	 	 	 	SurfaceGui = {
+ 	 	 	 	 	 	 	 	 	TextLabel = mockTextLabel -- Return the mock TextLabel
+ 	 	 	 	 	 	 	 	}
+ 	 	 	 	 	 	 	}
+ 	 	 	 	 	 	}
+ 	 	 	 	 	end
+ 	 	 	 	}
+ 	 	 	} 
+ 	 	end
+ 	 	return nil
+ 	end,
+}
+
+-- Set up Workspace mock once
+if Workspace.Interiors == nil then
+    Workspace.Interiors = mockInteriors
+    print("MOCK: Injected mock 'workspace.Interiors' object.")
+end
+
+-- == 3. Trigger Functions ==
+
+-- Function to trigger the player_selected_door_msg logic (NEW)
+local function triggerPlayerSelectedDoorMsg(player_selected_door_msg_func, player_selected_door_func)
+ 	if not player_selected_door_msg_func or type(player_selected_door_msg_func) ~= "function" then
+ 	 	warn("Cannot trigger 'player_selected_door_msg': Function reference is invalid.")
+ 	 	return
+ 	end
+
+ 	print("\n--- Triggering player_selected_door_msg (Msg version) ---")
+    
+    -- Reset mock text label for fresh test
+    mockTextLabel.Text = "0"
+ 	
+ 	-- Mock arg1: This is the context argument
+ 	local mock_arg1 = {
+ 	 	undecided_players_left = 5, -- Initial mock value
+ 	 	
+ 	 	-- CRITICAL FIX: Inject the actual function so the wrapper can call it as a method (arg1:player_selected_door)
+ 	 	player_selected_door = player_selected_door_func, 
+ 	 	
+ 	 	-- FIX: Add the new mock function 'await_interior'
+ 	 	await_interior = function(self, callback)
+ 	 	 	print("MOCK: arg1:await_interior() called. Immediately running callback...")
+ 	 	 	if type(callback) == "function" then
+ 	 	 	 	-- Running the callback simulates the interior loading being complete.
+ 	 	 	 	callback() 
+ 	 	 	end
+ 	 	end,
+
+ 	 	-- Mocks for player_selected_door's internal checks
+ 	 	get_room = function(self, roomID) 
+ 	 	 	print("MOCK: arg1:get_room() called for room " .. tostring(roomID) .. ". Returning HauntletInterior mock.")
+ 	 	 	-- FIX: Ensure this always returns the non-nil mock object to prevent indexing nil error
+ 	 	 	return mockInteriors:FindFirstChild("HauntletInterior")
+ 	 	end,
+ 	}
+
+ 	-- arg2, arg3, arg4 are passed through to the inner function
+ 	local mock_arg2 = "HauntletInterior" 
+ 	local mock_arg3 = "Door1" 
+ 	local mock_arg4 = 3 -- Target undecided_players_left count 
+
+ 	local callSuccess, callResult = pcall(player_selected_door_msg_func, mock_arg1, mock_arg2, mock_arg3, mock_arg4)
+ 	
+ 	if callSuccess then
+ 	 	print("Function 'player_selected_door_msg' finished successfully.")
+ 	 	print("MOCK: Final undecided_players_left: " .. tostring(mock_arg1.undecided_players_left)) 
+ 	 	print("MOCK: Final TextLabel.Text: " .. tostring(mockTextLabel.Text)) 
+ 	else
+ 	 	warn("Function 'player_selected_door_msg' call failed. Error: " .. tostring(callResult))
+ 	end
+end
+
+-- Function to trigger the player_selected_door logic (original, for comparison)
+local function triggerPlayerSelectedDoor(player_selected_door_func)
+ 	if not player_selected_door_func or type(player_selected_door_func) ~= "function" then
+ 	 	warn("Cannot trigger 'player_selected_door': Function reference is invalid.")
+ 	 	return
+ 	end
+
+ 	print("\n--- Triggering player_selected_door (Direct version) ---")
+    
+    -- Reset mock text label for fresh test
+    mockTextLabel.Text = "0"
+
+ 	-- Mock arg1: This is the context argument
+ 	local mock_arg1 = {
+ 	 	undecided_players_left = 5, 
+ 	 	is_local_player_escaped = false, 
+ 	 	round = 0, 
+ 	 	
+ 	 	get_room = function(self, roomID)
+ 	 	 	print("MOCK: arg1:get_room() called for room " .. tostring(roomID) .. ". Returning HauntletInterior mock.")
+ 	 	 	-- FIX: Ensure this always returns the non-nil mock object to prevent indexing nil error
+ 	 	 	return mockInteriors:FindFirstChild("HauntletInterior")
+ 	 	end,
+ 	 	announce_promise_queue = { cancel = function() end },
+ 	 	music_stems = {},
+ 	 	fade_out_stem = function() return { andThen = function(cb) cb() end } end,
+ 	}
+
+ 	local mock_arg2 = "HauntletInterior"
+ 	local mock_arg3 = "Door1"
+ 	local mock_arg4 = 4 
+
+ 	local callSuccess, callResult = pcall(player_selected_door_func, mock_arg1, mock_arg2, mock_arg3, mock_arg4)
+ 	
+ 	if callSuccess then
+ 	 	print("Function 'player_selected_door' finished successfully.")
+ 	 	print("MOCK: Final undecided_players_left: " .. tostring(mock_arg1.undecided_players_left))
+ 	 	print("MOCK: Final TextLabel.Text: " .. tostring(mockTextLabel.Text))
+ 	else
+ 	 	warn("Function 'player_selected_door' call failed. Error: " .. tostring(callResult))
+ 	end
+end
+
+-- Function to trigger the escaped logic 
+local function triggerEscaped(escaped_func)
+ 	if not escaped_func or type(escaped_func) ~= "function" then
+ 	 	warn("Cannot trigger 'escaped': Function reference is invalid.")
+ 	 	return
+ 	end
+
+ 	print("\n--- Triggering escaped ---")
+ 	
+ 	local mock_StatApp = {
+ 	 	update_stat = function(player, statName, value)
+ 	 	 	print(string.format("MOCK: StatApp:update_stat() called for player %s, stat: %s, value: %d", 
+ 	 	 	 	tostring(player.Name), tostring(statName), value))
+ 	 	end
+ 	}
+
+ 	local mock_LocalPlayer = {
+ 	 	Name = "LocalPlayerMock",
+ 	 	UserId = 1000000,
+ 	}
+
+ 	-- The escaped function only takes arg1, which is the context object.
+ 	local mock_arg1 = {
+ 	 	static_minigame_id = "Hauntlet", 
+ 	 	join_zone_destination_id = "MainDoor",
+ 	 	
+ 	 	is_local_player_escaped = false, 
+ 	 	RewardMultiplier = 2, -- Set to max (2)
+ 	 	Escapes = 100, -- Set to max (100)
+ 	 	Score = 100, -- Set to max (100)	 	 	
+ 	 	ExitReward = 100,  
+ 	 	round = 1, -- Set to 1
+ 	 	
+ 	 	StatApp = mock_StatApp,
+ 	 	LocalPlayer = mock_LocalPlayer,
+        
+        announce = function(self, message, duration)
+            print(string.format("MOCK: arg1:announce() called with message: '%s'", tostring(message)))
+        end,
+ 	}
+ 	
+ 	local callSuccess, callResult = pcall(escaped_func, mock_arg1)
+ 	
+ 	if callSuccess then
+ 	 	print("Function 'escaped' call finished successfully.")
+ 	else
+ 	 	warn("Function 'escaped' call failed. Error: " .. tostring(callResult))
+ 	end
+end
+
+-- Function to trigger the minigame exit logic 
+local function triggerExitMinigame(exit_minigame_func, ClientModule)
+ 	if not exit_minigame_func or type(exit_minigame_func) ~= "function" then
+ 	 	warn("Cannot trigger 'exit_minigame': Function reference is invalid.")
+ 	 	return
+ 	end
+
+ 	print("\n--- Triggering exit_minigame ---")
+ 	
+ 	-- Mock arg2: Controls the destination based on minigame result + Rooms cleanup
+ 	local mock_arg2 = {
+ 	 	results = { 
+ 	 	 	[1] = { value = 100 } -- Triggers teleport to HauntletEscape
+ 	 	},
+ 	 	Rooms = {
+ 	 	 	ClearAllChildren = function() 
+ 	 	 	 	print("MOCK: arg2.Rooms:ClearAllChildren() called.")
+ 	 	 	end
+ 	 	}
+ 	}
+
+ 	-- Mock arg1: Contains context data for the minigame + Music cleanup
+ 	local mock_arg1 = {
+ 	 	static_minigame_id = "Hauntlet", 
+ 	 	join_zone_destination_id = "MainDoor",
+ 	 	
+ 	 	announce_promise_queue = {
+ 	 	 	cancel = function()
+ 	 	 	 	print("MOCK: arg1.announce_promise_queue:cancel() called.")
+ 	 	 	end
+ 	 	},
+ 	 	
+ 	 	music_stems = {
+ 	 	 	{ sound = { Destroy = function() print("MOCK: Music stem 1 sound destroyed.") end } },
+ 	 	 	{ sound = { Destroy = function() print("MOCK: Music stem 2 sound destroyed.") end } },
+ 	 	},
+
+ 	 	fade_out_stem = function(stemId, duration) 
+ 	 	 	print("MOCK: arg1:fade_out_stem() called for stem " .. tostring(stemId) .. ".")
+ 	 	 	return {
+ 	 	 	 	andThen = function(callback) 
+ 	 	 	 	 	callback()
+ 	 	 	 	end
+ 	 	 	}
+ 	 	end,
+ 	}
+
+ 	local callSuccess, callResult = pcall(exit_minigame_func, ClientModule, mock_arg1, mock_arg2)
+ 	
+ 	if callSuccess then
+ 	 	print("Function 'exit_minigame' call finished successfully.")
+ 	else
+ 	 	warn("Function 'exit_minigame' call failed. Error: " .. tostring(callResult))
+ 	end
+end
+
+-- Main execution flow
+local function main()
+ 	local ModuleInstance = getModuleInstance(MODULE_PATH_COMPONENTS)
+
+ 	if not ModuleInstance or not ModuleInstance:IsA("ModuleScript") then
+ 	 	warn("Failed to locate or verify the ModuleScript instance.")
+ 	 	return
+ 	end
+
+ 	print("Successfully located ModuleScript. Attempting to require...")
+ 	
+ 	local success, ClientModule = pcall(require, ModuleInstance)
+
+ 	if not success or type(ClientModule) ~= "table" then
+ 	 	warn("Failed to require the module or it did not return a table. Error: " .. tostring(ClientModule))
+ 	 	return
+ 	end
+ 	
+    -- Function Lookup (Handle cases where functions are not at the top level)
+    print("Searching for functions...")
+    local player_selected_door_msg_func = ClientModule.player_selected_door_msg or findFunctionRecursively(ClientModule, "player_selected_door_msg")
+    local player_selected_door_func = ClientModule.player_selected_door or findFunctionRecursively(ClientModule, "player_selected_door")
+    local escaped_func = ClientModule.escaped or findFunctionRecursively(ClientModule, "escaped")
+    local exit_minigame_func = ClientModule.exit_minigame or findFunctionRecursively(ClientModule, "exit_minigame")
+    
+    -- Check if all critical functions were found
+    if not player_selected_door_msg_func or not player_selected_door_func or not escaped_func or not exit_minigame_func then
+        warn("One or more critical minigame functions could not be located in the module.")
+    end
+
+    -- 1. Execute the message-passing door selection logic
+ 	triggerPlayerSelectedDoorMsg(player_selected_door_msg_func, player_selected_door_func)
+
+    -- 2. Execute the direct player selection logic (for comparison)
+ 	triggerPlayerSelectedDoor(player_selected_door_func)
+
+ 	-- 3. Execute the escaped logic
+ 	triggerEscaped(escaped_func)
+
+ 	-- 4. Execute the minigame exit logic
+ 	triggerExitMinigame(exit_minigame_func, ClientModule)
+end
+
+main()
+
+
+
+
+
+
 
 -- Configuration
 local TELEPORT_DELAY = 0.15 -- Time in seconds to wait at each physical target (reduced for speed)
@@ -26,7 +384,7 @@ local TIMER_START_THRESHOLD = "00:30" -- If the timer is <= this value when star
 local MANNEQUIN_TEST_TIME = 5.0 -- Time in seconds to wait at each mannequin for testing (Reduced for speed)
 
 -- The status message configuration (Updated to display version)
-local VERSION_TEXT = "V3.3 Active make this scirpt last while the event lasts!" -- The version text to display
+local VERSION_TEXT = "V3.4 Active - Event Cycle Endurance Mode" -- Updated version text for event duration
 local STATUS_DURATION = 5.0 
 local STATUS_COLOR = Color3.fromRGB(255, 0, 0) -- Bright Red for high visibility
 local RESTORE_COLOR = Color3.fromRGB(255, 255, 255) -- White (Used if original color can't be stored)
@@ -146,9 +504,7 @@ end
 
 task.spawn(timerMonitor)
 
--- IMPORTANT FIX: Call the version display function immediately after setup
--- This ensures the version number is displayed when the script loads,
--- regardless of whether the main automation sequence starts.
+-- Call the version display function immediately after setup
 displayVersionStatus()
 
 --------------------------------------------------------------------------------
@@ -164,12 +520,6 @@ local function clickButton(button)
         return
     end
     
-    -- Crucial check to ensure the button is visible and active before trying to click
-    if button:IsA("GuiObject") and (button.Visible == false or button.Active == false) then
-        warn(string.format("Button %s is not Visible or Active. Skipping click attempts.", button.Name))
-        return
-    end
-
     print("Attempting to click:", button.Name, "(Type:", button.ClassName, ")")
     
     -- 1. Attempt to simulate MouseButton1Down
@@ -212,13 +562,12 @@ local function openMainInventory()
     end
 end
 
--- Clicks all available pet buttons in BackpackApp by prioritizing the dynamic item frame itself.
+-- Clicks all available pet buttons in BackpackApp by performing a targeted search.
 local function findAndClickPetButton()
     if ShouldStop then return end
 
     local gui = LocalPlayer.PlayerGui
     local BackpackApp = nil
-    -- INCREASED TIMEOUT: Allows more time for the UI to load before giving up on this cycle.
     local waitTimeout = 5 -- Wait up to 5 seconds for the UI to appear
     local startTime = tick()
 
@@ -232,83 +581,80 @@ local function findAndClickPetButton()
 
     if not BackpackApp then
         warn(string.format("BackpackApp GUI failed to open or load within %d seconds. Skipping pet selection this cycle.", waitTimeout))
-        return -- Returns gracefully, allowing the main script loop to continue and try again later.
+        return
     end
     
-    -- 2. Traverse the path using the found BackpackApp
-    local content = BackpackApp:FindFirstChild("Frame")
+    -- 2. Traverse the path to the 'pets' container
+    local scrollingFrame = BackpackApp:FindFirstChild("Frame")
         and BackpackApp.Frame:FindFirstChild("Body")
         and BackpackApp.Frame.Body:FindFirstChild("ScrollComplex")
         and BackpackApp.Frame.Body.ScrollComplex:FindFirstChild("ScrollingFrame")
-        and BackpackApp.Frame.Body.ScrollComplex.ScrollingFrame:FindFirstChild("Content")
 
-    if not content then
-        warn("Pet content container not fully loaded in BackpackApp structure. Skipping pet selection this cycle.")
-        return -- Returns gracefully
+    if not scrollingFrame then
+        warn("BackpackApp ScrollingFrame not found. Skipping pet selection this cycle.")
+        return
+    end
+
+    -- We check both 'Content/pets' (common structure) and directly for 'Row0' (user path)
+    local petsContainer = scrollingFrame:FindFirstChild("Content") and scrollingFrame.Content:FindFirstChild("pets")
+    
+    -- Fallback to searching the ScrollingFrame itself if the Content/pets path is missing,
+    -- or if the items are directly placed (e.g., Row0).
+    local containerToSearch = petsContainer or scrollingFrame
+    
+    if not containerToSearch then
+        warn("Could not find a valid pet container (pets or ScrollingFrame). Skipping pet selection.")
+        return
     end
     
-    local pets = content:FindFirstChild("pets")
-    if not pets then warn("'pets' container not found under Content. Skipping pet selection this cycle."); return end
-
-    print("Searching for ALL usable pet buttons, prioritizing the dynamically named item frame itself...")
+    print("Searching for ALL usable pet buttons within the item containers...")
     
     local foundPetButton = false
     
-    -- Iterate through all children of 'pets' (which should be the rows or direct pet containers)
-    for _, rowOrContainer in ipairs(pets:GetChildren()) do
-        if ShouldStop then return end -- Check for sequence stop
+    -- Iterate through all children (which should be the rows or item frames, e.g., 'Row0', 'Row1', or dynamic item names)
+    for _, petContainer in ipairs(containerToSearch:GetChildren()) do
+        if ShouldStop then return end
         
         -- Explicitly check and skip any container related to "add_more_pets"
-        if rowOrContainer.Name:lower():match("add_more_pets") then 
-            print(string.format("Skipping excluded container: %s", rowOrContainer.Name))
-            continue -- Skip the entire container
+        if petContainer.Name:lower():match("add_more_pets") then 
+            print(string.format("Skipping excluded container: %s", petContainer.Name))
+            continue
         end
         
-        -- Priority 1: Check if the container itself holds the button
-        local buttonToClick = rowOrContainer:FindFirstChild("Button", true) or rowOrContainer:FindFirstChild("TapButton", true)
-
-        if buttonToClick and (buttonToClick:IsA("TextButton") or buttonToClick:IsA("ImageButton")) then
-            print(string.format("Found and clicking pet button in top-level container: %s", rowOrContainer.Name))
-            clickButton(buttonToClick)
-            foundPetButton = true
-        else
-            -- Priority 2: Iterate through children of the row/container (the individual pet item frames, e.g., "2_1e892...")
-            for _, itemFrame in ipairs(rowOrContainer:GetChildren()) do
-                if ShouldStop then return end -- Check for sequence stop
-                
-                -- Explicitly check and skip any item frame related to "add_more_pets"
-                if itemFrame.Name:lower():match("add_more_pets") then 
-                    print(string.format("Skipping excluded item frame: %s", itemFrame.Name))
-                    continue
-                end
-
-                local targetElement = nil
-                
-                -- ATTEMPT 1 (P1): Check if the itemFrame (the dynamically named part) is the clickable object itself.
-                if itemFrame:IsA("TextButton") or itemFrame:IsA("ImageButton") then
-                    targetElement = itemFrame
-                    print(string.format("P1 Click: Targeting dynamic item frame itself: %s", itemFrame.Name))
-                end
-
-                -- ATTEMPT 2 (P2): Fallback: If not, look for a nested Button/TapButton inside the frame.
-                if not targetElement then
-                    targetElement = itemFrame:FindFirstChild("Button", true) or itemFrame:FindFirstChild("TapButton", true)
-                    if targetElement then
-                        print(string.format("P2 Fallback: Targeting nested button in: %s -> %s", rowOrContainer.Name, itemFrame.Name))
-                    end
-                end
-                
-                -- Execute the click if we found a valid button target.
-                if targetElement and (targetElement:IsA("TextButton") or targetElement:IsA("ImageButton")) then
-                    clickButton(targetElement)
-                    foundPetButton = true
-                end
+        local targetElement = nil
+        
+        -- 3. Targeted Fix: Find the nested Frame *inside* the pet container
+        local nestedFrame = petContainer:FindFirstChild("Frame", false) 
+        
+        if nestedFrame and nestedFrame:IsA("GuiObject") then
+            -- 4. Look for the button inside that nested Frame (using recursive search just in case)
+            targetElement = nestedFrame:FindFirstChild("Button", true)
+            if not targetElement then
+                targetElement = nestedFrame:FindFirstChild("TapButton", true)
             end
+        end
+        
+        -- Fallback: If the button wasn't in a nested Frame, check if it's directly inside the pet container
+        if not targetElement then
+            targetElement = petContainer:FindFirstChild("Button", true) or petContainer:FindFirstChild("TapButton", true)
+            if not targetElement and (petContainer:IsA("TextButton") or petContainer:IsA("ImageButton")) then
+                 -- Final fallback: Check if the container itself is the clickable button
+                targetElement = petContainer 
+            end
+        end
+
+
+        -- Execute the click
+        if targetElement and (targetElement:IsA("TextButton") or targetElement:IsA("ImageButton")) then
+            print(string.format("Clicking Pet Button: %s (Parent: %s)", targetElement.Name, targetElement.Parent.Name))
+            clickButton(targetElement)
+            foundPetButton = true
+            task.wait(0.05) -- Small delay between clicks
         end
     end
 
     if not foundPetButton then
-        warn("No usable pet buttons found inside the 'pets' container after deep search.")
+        warn("No usable pet buttons found inside the item containers after deep search.")
     else
         print("Finished clicking all available pet buttons in the BackpackApp.")
     end
@@ -551,8 +897,6 @@ local function runFullSequence(minigameContainer)
 
     IsSequenceActive = true
     
-    -- REMOVED: displayVersionStatus() call moved to the main thread startup.
-
     -- 1. Determine the Paw position (This is the critical return point for accessory confirmation).
     local pawPosition = findFirstPawPosition(minigameContainer)
     local returnPositionForMannequins = pawPosition -- Use pawPosition as the primary return point
@@ -573,7 +917,6 @@ local function runFullSequence(minigameContainer)
     
     -- ----------------------------------------------------
     -- INITIAL SETUP SEQUENCE (PAW -> ACCESSORIES -> PETS)
-    -- This block enforces the user's required starting order.
     -- ----------------------------------------------------
     if pawPosition and not ShouldStop then
         print("--- START OF ROUND SETUP: Executing strict start sequence (Paw -> Accessories -> Pets). ---")
@@ -591,7 +934,7 @@ local function runFullSequence(minigameContainer)
         print("--- SETUP: Opening backpack, selecting ALL pets, and closing. ---")
         openMainInventory() 
         if ShouldStop then return end
-        findAndClickPetButton()
+        findAndClickPetButton() -- This is the key fix area
         if ShouldStop then return end
         closeBackpack()
         if ShouldStop then return end
@@ -668,3 +1011,5 @@ while true do
     -- Wait before attempting to search/restart the cycle again
     task.wait(SEARCH_WAIT_TIME)
 end
+
+
