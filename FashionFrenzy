@@ -27,7 +27,7 @@ local MANNEQUIN_TEST_TIME = 5.0 -- Time in seconds to wait at each mannequin for
 
 -- The status message configuration (Updated to display version)
 local VERSION_TEXT = "V3.3 Active make this scirpt last while the event lasts!" -- The version text to display
-local STATUS_DURATION = 3.0 
+local STATUS_DURATION = 5.0 
 local STATUS_COLOR = Color3.fromRGB(255, 0, 0) -- Bright Red for high visibility
 local RESTORE_COLOR = Color3.fromRGB(255, 255, 255) -- White (Used if original color can't be stored)
 
