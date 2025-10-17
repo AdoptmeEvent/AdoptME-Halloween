@@ -1,12 +1,11 @@
 --[[
-
-
-print("v1.0.0")
     Roblox Minigame Teleporter (LocalScript)
 
-    This script continuously monitors two specific TimerLabel Gui objects in the Workspace.
-    When the text of either timer changes to contain the specific target times ("00:30" or "00:20"),
+    This script continuously monitors specific TextLabel Gui objects in the Workspace.
+    When the text of the timer changes to contain the specific target times ("00:30" or "00:20"),
     it teleports the LocalPlayer's character to the associated destination Part ("Ring").
+
+    ENHANCEMENT: Added 'SleepOrTreat' minigame to the monitoring configuration.
 
     CRITICAL FIX FOR MONITORING STOPPAGE:
     - The monitoring logic is now contained within a **persistent while true do loop**.
@@ -42,7 +41,8 @@ local CONFIG = {
         hasTeleported = false, -- Debounce flag
         -- UI configuration
         UIName = "FashionFrenzyTimerDisplay",
-        Position = UDim2.new(0.5, 0, 0.35, 0), -- Position of the first timer (35% down)
+        -- Position adjusted for 3 timers + close button
+        Position = UDim2.new(0.5, 0, 0.30, 0), 
     },
     Hauntlet = {
         -- Path: Workspace.Interiors["MainMap!Fall"].HauntletMinigameJoinZone.Billboard.BillboardGui.TimerLabel
@@ -55,16 +55,35 @@ local CONFIG = {
         hasTeleported = false, -- Debounce flag
         -- UI configuration
         UIName = "HauntletTimerDisplay",
-        Position = UDim2.new(0.5, 0, 0.40, 0), -- Position of the second timer (40% down)
+        -- Position adjusted for 3 timers + close button
+        Position = UDim2.new(0.5, 0, 0.35, 0),
+    },
+    -- *** NEW MINIGAME ADDED HERE ***
+    SleepOrTreat = {
+        -- Path: Workspace.Interiors["MainMap!Fall"].SleepOrTreatJoinZone.Billboard.BillboardGui.TimerLabel
+        TimerPathParts = {'Interiors', 'MainMap!Fall', 'SleepOrTreatJoinZone', 'Billboard', 'BillboardGui', 'TimerLabel'},
+        -- Path: Workspace.Interiors["MainMap!Fall"].SleepOrTreatJoinZone.Ring
+        DestPathParts = {'Interiors', 'MainMap!Fall', 'SleepOrTreatJoinZone', 'Ring'},
+        -- Runtime References
+        TimerObject = nil,
+        Connection = nil,
+        hasTeleported = false,
+        -- UI configuration
+        UIName = "SleepOrTreatTimerDisplay",
+        -- Position adjusted for 3 timers + close button
+        Position = UDim2.new(0.5, 0, 0.40, 0),
     }
 }
 
--- Position for the Close Button
-local CLOSE_BUTTON_POSITION = UDim2.new(0.5, 150, 0.35, 0) 
+-- Position for the Close Button (adjusted position for rotation)
+local CLOSE_BUTTON_POSITION = UDim2.new(0.5, 170, 0.33, 0) 
+
+-- Position for the Title Label
+local TITLE_LABEL_POSITION = UDim2.new(0.5, 0, 0.25, 0)
 
 -- Default and Warning colors
 local DEFAULT_COLOR = Color3.new(0.9, 0.9, 0.9) -- Off-white/Light Gray
-local ALERT_COLOR = Color3.new(1, 0.2, 0.2)   -- Bright Red
+local ALERT_COLOR = Color3.new(1, 0.2, 0.2)    -- Bright Red
 
 -- Store the main ScreenGui reference globally for easy destruction
 local ScreenGuiRef = nil
@@ -147,7 +166,7 @@ local function stopMonitor()
     end
 end
 
--- UI Setup Function (Creates the ScreenGui and the Close button ONCE)
+-- UI Setup Function (Creates the ScreenGui, Title, and Close button ONCE)
 local function ensureScreenGuiAndCloseButton()
     local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
     
@@ -160,23 +179,47 @@ local function ensureScreenGuiAndCloseButton()
         ScreenGui.DisplayOrder = 100 -- Ensure it's on top of game UI
         ScreenGuiRef = ScreenGui -- Set the global reference
     end
+
+    -- 2. Create the Title Label
+    local TitleLabel = ScreenGui:FindFirstChild("TitleLabel")
+    if not TitleLabel then
+        TitleLabel = Instance.new("TextLabel")
+        TitleLabel.Name = "TitleLabel"
+        TitleLabel.Size = UDim2.new(0, 300, 0, 24)
+        TitleLabel.Position = TITLE_LABEL_POSITION
+        TitleLabel.AnchorPoint = Vector2.new(0.5, 0)
+        TitleLabel.Font = Enum.Font.SourceSansBold
+        TitleLabel.TextSize = 20
+        TitleLabel.TextColor3 = Color3.new(1, 1, 1)
+        TitleLabel.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+        TitleLabel.BackgroundTransparency = 0.8
+        TitleLabel.Text = "JOIN ZONE DETECTION MONITOR" -- NEW TITLE
+        TitleLabel.Parent = ScreenGui
+        TitleLabel.ZIndex = 2
+        
+        local UICorner = Instance.new("UICorner")
+        UICorner.CornerRadius = UDim.new(0, 6)
+        UICorner.Parent = TitleLabel
+    end
     
-    -- 2. Create the Close Button (if it doesn't exist)
+    -- 3. Create the Close Button (if it doesn't exist)
     local CloseButton = ScreenGui:FindFirstChild("CloseMonitorButton")
     if not CloseButton then
         CloseButton = Instance.new("TextButton")
         CloseButton.Name = "CloseMonitorButton"
-        CloseButton.Size = UDim2.new(0, 80, 0, 24) -- Slightly larger
+        -- SWAPPED SIZE: 24 (height) by 80 (width)
+        CloseButton.Size = UDim2.new(0, 24, 0, 80)
         CloseButton.Position = CLOSE_BUTTON_POSITION 
         CloseButton.AnchorPoint = Vector2.new(0.5, 0)
-        CloseButton.Text = "X Stop"
+        CloseButton.Text = "STOP" -- FIXED TEXT
         CloseButton.Font = Enum.Font.SourceSansBold
-        CloseButton.TextSize = 16
+        CloseButton.TextSize = 18 -- Increased size slightly
         CloseButton.TextColor3 = Color3.new(1, 1, 1)
         CloseButton.BackgroundColor3 = Color3.new(0.9, 0.2, 0.2)
         CloseButton.BorderSizePixel = 0
         CloseButton.Parent = ScreenGui
         CloseButton.ZIndex = 3
+        CloseButton.Rotation = 90 -- ADDED ROTATION
         
         -- Add a corner for a modern look
         local UICorner = Instance.new("UICorner")
