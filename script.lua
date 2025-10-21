@@ -51,7 +51,7 @@ local Window = Rayfield:CreateWindow({
         FileName = "EventMasterGroup"
     },
     Discord = {Enabled = false},
-    KeySystem = true,
+    KeySystem = false,
 })
 
 -- Tabs
